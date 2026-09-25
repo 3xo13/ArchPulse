@@ -1,0 +1,66 @@
+{
+  "schemaVersion": "1",
+  "layers": [
+    {
+      "name": "shared",
+      "glob": "demo/packages/shared/src/**",
+      "description": "Shared value objects and pure types. No dependencies on other layers."
+    },
+    {
+      "name": "db",
+      "glob": "demo/packages/db/src/**",
+      "description": "Data-access layer. May depend on shared and domain types only."
+    },
+    {
+      "name": "domain",
+      "glob": "demo/packages/domain/src/**",
+      "description": "Business logic. May depend on shared only."
+    },
+    {
+      "name": "ui",
+      "glob": "demo/packages/ui/src/**",
+      "description": "Presentation / service layer. May depend on domain and shared only."
+    }
+  ],
+  "allowedDependencies": [
+    { "from": "db",     "to": "shared",  "reason": "db may use shared types" },
+    { "from": "db",     "to": "domain",  "reason": "db may reference domain types for storage" },
+    { "from": "domain", "to": "shared",  "reason": "domain may use shared value objects" },
+    { "from": "ui",     "to": "domain",  "reason": "ui orchestrates domain operations" },
+    { "from": "ui",     "to": "shared",  "reason": "ui may use shared types directly" }
+  ],
+  "forbiddenDependencies": [
+    {
+      "from": "ui",
+      "to": "db",
+      "reason": "UI must not know about the data-access layer; route through domain instead."
+    },
+    {
+      "from": "shared",
+      "to": "domain",
+      "reason": "shared is a lower-level package and must not import from higher-level domain."
+    },
+    {
+      "from": "shared",
+      "to": "ui",
+      "reason": "shared must not import from ui."
+    },
+    {
+      "from": "domain",
+      "to": "ui",
+      "reason": "domain must not import from ui."
+    },
+    {
+      "from": "domain",
+      "to": "db",
+      "reason": "domain must not import from db; db depends on domain, not the other way."
+    }
+  ],
+  "testCommands": [
+    "npx vitest run demo/packages/domain/src",
+    "npx vitest run demo/packages/db/src",
+    "npx vitest run demo/packages/ui/src"
+  ],
+  "scanScope": "demo/packages",
+  "scanExcludes": ["**/node_modules/**", "**/dist/**", "**/*.test.ts"]
+}

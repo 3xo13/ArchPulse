@@ -10,6 +10,7 @@
   "scripts": {
     "build": "tsc --project tsconfig.json",
     "lint": "eslint src",
+    "test": "vitest run",
     "scan": "tsx src/cli/index.ts scan",
     "cases": "tsx src/cli/index.ts cases",
     "compare": "tsx src/cli/index.ts compare",

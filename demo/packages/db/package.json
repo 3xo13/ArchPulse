@@ -1,0 +1,12 @@
+{
+  "name": "@demo/db",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "dependencies": {
+    "@demo/shared": "*"
+  },
+  "scripts": {
+    "test": "vitest run"
+  }
+}

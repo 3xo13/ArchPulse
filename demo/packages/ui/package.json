@@ -1,0 +1,13 @@
+{
+  "name": "@demo/ui",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "dependencies": {
+    "@demo/domain": "*",
+    "@demo/shared": "*"
+  },
+  "scripts": {
+    "test": "vitest run"
+  }
+}

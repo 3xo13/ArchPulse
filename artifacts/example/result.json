@@ -1,0 +1,31 @@
+{
+  "caseId": "case-001",
+  "baselineId": "baseline",
+  "afterId": "post-repair",
+  "resolvedViolations": [
+    {
+      "id": "ui-no-db::demo/packages/ui/src/orderService.ts::demo/packages/db/src/index.ts",
+      "rule": "ui-no-db",
+      "from": "demo/packages/ui/src/orderService.ts",
+      "to": "demo/packages/db/src/index.ts",
+      "severity": "error"
+    }
+  ],
+  "persistentViolations": [
+    {
+      "id": "shared-no-domain::demo/packages/shared/src/index.ts::demo/packages/domain/src/index.ts",
+      "rule": "shared-no-domain",
+      "from": "demo/packages/shared/src/index.ts",
+      "to": "demo/packages/domain/src/index.ts",
+      "severity": "error",
+      "note": "Belongs to case-002, not in scope for this repair"
+    }
+  ],
+  "newViolations": [],
+  "testCommand": "npx vitest run demo/packages/domain/src demo/packages/db/src demo/packages/ui/src",
+  "testExitCode": 0,
+  "testOutput": "Test Files  3 passed (3)\nTests       14 passed (14)",
+  "typecheckExitCode": 0,
+  "status": "verified",
+  "reason": "Target violation ui-no-db resolved. No new violations. All tests pass."
+}

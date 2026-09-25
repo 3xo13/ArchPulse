@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "1",
+  "root": "demo/packages",
+  "gitMarker": "post-repair",
+  "scannerVersion": "dependency-cruiser@16.10.4",
+  "configHash": "PLACEHOLDER_REPLACED_BY_SCANNER",
+  "timestamp": "2026-09-25T02:00:00.000Z",
+  "modules": [
+    { "path": "demo/packages/db/src/index.ts",       "package": "@demo/db",     "layer": "db" },
+    { "path": "demo/packages/db/src/repository.ts",  "package": "@demo/db",     "layer": "db" },
+    { "path": "demo/packages/domain/src/index.ts",   "package": "@demo/domain", "layer": "domain" },
+    { "path": "demo/packages/domain/src/order.ts",   "package": "@demo/domain", "layer": "domain" },
+    { "path": "demo/packages/domain/src/orderService.ts", "package": "@demo/domain", "layer": "domain" },
+    { "path": "demo/packages/shared/src/index.ts",   "package": "@demo/shared", "layer": "shared" },
+    { "path": "demo/packages/shared/src/types.ts",   "package": "@demo/shared", "layer": "shared" },
+    { "path": "demo/packages/ui/src/index.ts",       "package": "@demo/ui",     "layer": "ui" },
+    { "path": "demo/packages/ui/src/orderService.ts","package": "@demo/ui",     "layer": "ui" }
+  ],
+  "edges": [
+    { "from": "demo/packages/db/src/index.ts",            "to": "demo/packages/db/src/repository.ts",        "dependencyType": "local" },
+    { "from": "demo/packages/domain/src/index.ts",        "to": "demo/packages/domain/src/order.ts",         "dependencyType": "local" },
+    { "from": "demo/packages/domain/src/index.ts",        "to": "demo/packages/domain/src/orderService.ts",  "dependencyType": "local" },
+    { "from": "demo/packages/domain/src/orderService.ts", "to": "demo/packages/db/src/index.ts",             "dependencyType": "workspace" },
+    { "from": "demo/packages/domain/src/orderService.ts", "to": "demo/packages/domain/src/order.ts",         "dependencyType": "local" },
+    { "from": "demo/packages/shared/src/index.ts",        "to": "demo/packages/shared/src/types.ts",         "dependencyType": "local" },
+    { "from": "demo/packages/ui/src/index.ts",            "to": "demo/packages/ui/src/orderService.ts",      "dependencyType": "local" },
+    { "from": "demo/packages/ui/src/orderService.ts",     "to": "demo/packages/domain/src/index.ts",         "dependencyType": "workspace" },
+    { "from": "demo/packages/ui/src/orderService.ts",     "to": "demo/packages/shared/src/index.ts",         "dependencyType": "workspace" }
+  ],
+  "violations": [
+    {
+      "id": "shared-no-domain::demo/packages/shared/src/index.ts::demo/packages/domain/src/index.ts",
+      "rule": "shared-no-domain",
+      "from": "demo/packages/shared/src/index.ts",
+      "to": "demo/packages/domain/src/index.ts",
+      "severity": "error",
+      "cyclePath": null,
+      "evidence": "shared still imports formatOrder from @demo/domain (case-002, not yet repaired)"
+    }
+  ],
+  "scannerWarnings": [],
+  "incompleteResolutionCount": 0
+}

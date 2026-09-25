@@ -1,0 +1,34 @@
+{
+  "caseId": "case-001",
+  "scanId": "baseline",
+  "title": "UI layer imports directly from db (forbidden boundary)",
+  "rule": "ui-no-db",
+  "severity": "error",
+  "violations": [
+    {
+      "id": "ui-no-db::demo/packages/ui/src/orderService.ts::demo/packages/db/src/index.ts",
+      "rule": "ui-no-db",
+      "from": "demo/packages/ui/src/orderService.ts",
+      "to": "demo/packages/db/src/index.ts",
+      "severity": "error",
+      "evidence": "ui imports { saveOrder, findOrdersByUser } from @demo/db"
+    }
+  ],
+  "primaryFiles": [
+    "demo/packages/ui/src/orderService.ts",
+    "demo/packages/db/src/index.ts",
+    "demo/packages/db/src/repository.ts",
+    "demo/packages/domain/src/order.ts"
+  ],
+  "relevantTests": [
+    "demo/packages/ui/src/orderService.test.ts",
+    "demo/packages/db/src/repository.test.ts"
+  ],
+  "testCommands": [
+    "npx vitest run demo/packages/domain/src",
+    "npx vitest run demo/packages/db/src",
+    "npx vitest run demo/packages/ui/src"
+  ],
+  "ruleExplanation": "The UI layer must not import from the data-access (db) layer directly. UI should call domain operations; the domain (or an application service) coordinates persistence. Direct UI→db coupling bypasses business rules and makes the layers untestable independently.",
+  "expectedEndCondition": "The violation 'ui-no-db' is absent from a same-config re-scan. All tests in the test commands still pass."
+}
