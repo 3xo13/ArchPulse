@@ -9,7 +9,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -112,10 +112,16 @@ if (isSelfInstall) {
     fail(`Server entry not found: ${absServerPath}`);
   }
 
+  // On Windows, Node requires file:// URLs for --import with absolute paths.
+  const loaderArg =
+    process.platform === "win32"
+      ? pathToFileURL(absLoaderPath).href
+      : absLoaderPath;
+
   mcpEntry = {
     type: "stdio",
     command: "node",
-    args: ["--import", absLoaderPath, absServerPath],
+    args: ["--import", loaderArg, absServerPath],
     env: { ARCHPULSE_ROOT: targetWorkspace },
   };
 }

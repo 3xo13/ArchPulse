@@ -255,12 +255,12 @@ async function generateGraphHtml(rawJson: unknown): Promise<string> {
 
   // ── Step 2: SVG from @viz-js/viz ──────────────────────────────────────────
   const { instance } = (await import("@viz-js/viz")) as {
-    instance: () => Promise<{ renderString: (dot: string) => string }>;
+    instance: () => Promise<{ renderString: (dot: string, opts?: { format?: string }) => string }>;
   };
   let svg: string;
   try {
     const viz = await instance();
-    svg = viz.renderString(dot);
+    svg = viz.renderString(dot, { format: "svg" });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`Viz.js failed to render the dependency graph DOT string: ${msg}`);

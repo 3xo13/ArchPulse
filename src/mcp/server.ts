@@ -212,7 +212,7 @@ server.registerTool(
  *
  * Throws a descriptive Error if validation fails.
  */
-function validateWithinWorkspace(candidatePath: string, trustedRoot: string): void {
+export function validateWithinWorkspace(candidatePath: string, trustedRoot: string): void {
   // trustedRoot must already exist
   const realRoot = fs.realpathSync(trustedRoot);
 
