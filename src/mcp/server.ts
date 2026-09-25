@@ -1,163 +1,208 @@
 #!/usr/bin/env node
 /**
- * src/mcp/server.ts
+ * ArchPulse — STDIO MCP server (Owner B)
  *
- * ArchPulse local STDIO MCP server.
- * Registers the three Bob-callable tools:
- *   - scan_repository  (implemented by Owner B in feature/scanner-mcp)
- *   - get_case         (implemented by Owner C in feature/grouping-cases)
- *   - verify_case      (implemented by Owner E in feature/verifier)
+ * Registers three tools:
+ *   scan_repository  — runs dependency-cruiser, saves artifacts, returns compact summary
+ *   get_case         — stub (implemented by Owner C)
+ *   verify_case      — stub (implemented by Owner E)
  *
- * Each tool handler delegates to a core function imported from src/core/.
- * The stubs below return { status: "not_implemented" } until the real
- * handlers are wired in by their respective owners.
+ * Transport: STDIO (spawned by Bob IDE via .bob/mcp.json)
+ *
+ * IMPORTANT: All logging uses console.error — stdout is the MCP protocol channel.
  */
 
+import * as nodePath from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { z } from "zod";
+import { z } from "zod/v4";
+import { runScan } from "../cli/scan.js";
 
-// ---------------------------------------------------------------------------
-// Tool handler imports
-// Each owner replaces the matching stub import with their real implementation.
-// ---------------------------------------------------------------------------
-
-// Owner B — replace with: import { scanRepository } from "../core/scanner.js"
-async function scanRepository(args: { workspacePath?: string }): Promise<unknown> {
-  return {
-    status: "not_implemented",
-    message: "scan_repository not yet wired — Owner B implements this in feature/scanner-mcp",
-    args,
-  };
-}
-
-// Owner C — replace with: import { getCase } from "../core/grouping.js"
-async function getCase(args: { caseId: string }): Promise<unknown> {
-  return {
-    status: "not_implemented",
-    message: "get_case not yet wired — Owner C implements this in feature/grouping-cases",
-    args,
-  };
-}
-
-// Owner E — replace with: import { verifyCase } from "../core/compare.js"
-async function verifyCase(args: { caseId: string; baselineId: string }): Promise<unknown> {
-  return {
-    status: "not_implemented",
-    message: "verify_case not yet wired — Owner E implements this in feature/verifier",
-    args,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Server setup
-// ---------------------------------------------------------------------------
+// ─── Server setup ─────────────────────────────────────────────────────────────
 
 const server = new McpServer({
   name: "archpulse",
   version: "0.1.0",
 });
 
-// ------------------------------------------------------------------
-// scan_repository
-// Runs the dependency-cruiser scan on the workspace, saves artifacts,
-// and returns a short summary with violation count and case IDs.
-// ------------------------------------------------------------------
-server.tool(
+// ─── Tool: scan_repository ────────────────────────────────────────────────────
+
+server.registerTool(
   "scan_repository",
-  "Scan the current workspace for architectural violations using dependency-cruiser. " +
-    "Saves a full snapshot and graph to .archpulse/. " +
-    "Returns a compact summary: violation count, case IDs, and artifact paths.",
   {
-    workspacePath: z
-      .string()
-      .optional()
-      .describe(
-        "Absolute path to the workspace root. Defaults to the configured ARCHPULSE_ROOT " +
-          "environment variable or the current working directory.",
-      ),
+    description:
+      "Run dependency-cruiser on the repository, save a full snapshot.json and graph.html to " +
+      "disk, and return a compact violation summary. Use the returned snapshotPath as baselineId " +
+      "for verify_case. Only paths within the configured workspace root are accepted.",
+    inputSchema: z.object({
+      workspacePath: z
+        .string()
+        .optional()
+        .describe(
+          "Absolute path to the repository root. Defaults to the server's working directory. " +
+            "Must be within the trusted workspace; paths outside are rejected."
+        ),
+      outDir: z
+        .string()
+        .optional()
+        .describe(
+          "Directory (relative to workspacePath) where artifacts are written. " +
+            "Defaults to .archpulse/latest"
+        ),
+    }),
   },
-  async ({ workspacePath }) => {
-    const result = await scanRepository({ workspacePath });
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify(result, null, 2),
-        },
-      ],
-    };
-  },
+  async ({ workspacePath, outDir }) => {
+    const repoRoot = resolveWorkspacePath(workspacePath);
+
+    console.error(`[archpulse] scan_repository called — root: ${repoRoot}`);
+
+    try {
+      const summary = await runScan({
+        repoRoot,
+        ...(outDir ? { outDir } : {}),
+      });
+
+      const lines: string[] = [
+        `Scan complete — ${summary.violationCount} violation(s) found (${summary.errorCount} error, ${summary.warnCount} warn).`,
+        `Git marker: ${summary.gitMarker}`,
+        `Config hash: ${summary.configHash.slice(0, 12)}...`,
+        `Snapshot saved to: ${summary.snapshotPath}`,
+        `Dependency graph saved to: ${summary.graphPath}`,
+        "",
+      ];
+
+      if (summary.violations.length === 0) {
+        lines.push("No rule violations detected.");
+      } else {
+        lines.push(`Violations:`);
+        for (const v of summary.violations) {
+          lines.push(`  [${v.severity.toUpperCase()}] ${v.rule}`);
+          lines.push(`    from: ${v.from}`);
+          lines.push(`    to:   ${v.to}`);
+          lines.push(`    id:   ${v.id}`);
+        }
+        lines.push("");
+        lines.push(
+          "Call get_case with one of the case IDs (generated by Owner C) to investigate further."
+        );
+      }
+
+      return {
+        content: [{ type: "text" as const, text: lines.join("\n") }],
+      };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[archpulse] scan_repository error: ${msg}`);
+      return {
+        content: [{ type: "text" as const, text: `scan_repository failed: ${msg}` }],
+        isError: true,
+      };
+    }
+  }
 );
 
-// ------------------------------------------------------------------
-// get_case
-// Returns a bounded case packet for one violation group.
-// The packet contains the rule, offending edges, primary source files,
-// relevant tests, and the expected end condition for the repair.
-// ------------------------------------------------------------------
-server.tool(
+// ─── Tool: get_case ───────────────────────────────────────────────────────────
+
+server.registerTool(
   "get_case",
-  "Retrieve a bounded case packet for a specific violation group ID. " +
-    "Returns rule details, offending file paths, relevant tests, and the repair stop condition. " +
-    "Does not return the full snapshot — only the information needed to investigate this case.",
   {
-    caseId: z
-      .string()
-      .describe('The case identifier, e.g. "case-001". Obtain from a prior scan_repository call.'),
+    description:
+      "Return a bounded case packet (title, rule, violations, primary files, relevant tests, " +
+      "test commands, and expected end condition) for a given case ID. " +
+      "Implemented by Owner C — returns a stub until that workstream is merged.",
+    inputSchema: z.object({
+      caseId: z.string().describe("Case ID, e.g. 'case-001'"),
+    }),
   },
   async ({ caseId }) => {
-    const result = await getCase({ caseId });
+    console.error(`[archpulse] get_case called — caseId: ${caseId}`);
+    // Stub: Owner C wires the real handler in src/core/grouping.ts + src/core/casePacket.ts
     return {
       content: [
         {
           type: "text" as const,
-          text: JSON.stringify(result, null, 2),
+          text:
+            `get_case for '${caseId}' is not yet implemented.\n` +
+            "Owner C (grouping) will wire this tool. " +
+            "Run 'npm run cases -- --snapshot .archpulse/latest/snapshot.json' to generate case packets.",
         },
       ],
+      isError: false,
     };
-  },
+  }
 );
 
-// ------------------------------------------------------------------
-// verify_case
-// Runs allowlisted tests + typecheck, re-scans with the same config,
-// and compares the before/after snapshots for the targeted case.
-// Returns resolved, persistent, and new violations plus test results.
-// ------------------------------------------------------------------
-server.tool(
+// ─── Tool: verify_case ────────────────────────────────────────────────────────
+
+server.registerTool(
   "verify_case",
-  "Verify a repaired case by running allowlisted tests, TypeScript typecheck, and a same-config re-scan. " +
-    "Compares the new snapshot against the saved baseline. " +
-    "Returns test exit status, resolved violations, persistent violations, and any new violations introduced. " +
-    "Do not report success without calling this tool.",
   {
-    caseId: z
-      .string()
-      .describe("The case identifier to verify, e.g. \"case-001\"."),
-    baselineId: z
-      .string()
-      .describe(
-        "The git marker or snapshot ID of the pre-repair baseline to compare against. " +
-          'Obtain from the scan_repository result, e.g. "baseline".',
-      ),
+    description:
+      "Run configured test commands and a same-config re-scan, then compare the new snapshot " +
+      "against the baseline to determine resolved, persistent, and new violations. " +
+      "Implemented by Owner E — returns a stub until that workstream is merged. " +
+      "SECURITY: test commands come only from config/architecture.json testCommands; " +
+      "arbitrary shell strings from the model are never accepted.",
+    inputSchema: z.object({
+      caseId: z.string().describe("Case ID, e.g. 'case-001'"),
+      baselineId: z
+        .string()
+        .describe(
+          "The gitMarker or snapshotPath of the before-scan to compare against. " +
+            "Use the snapshotPath returned by scan_repository."
+        ),
+    }),
   },
   async ({ caseId, baselineId }) => {
-    const result = await verifyCase({ caseId, baselineId });
+    console.error(`[archpulse] verify_case called — caseId: ${caseId}, baselineId: ${baselineId}`);
+    // Stub: Owner E wires the real handler in src/core/compare.ts + src/core/runner.ts
     return {
       content: [
         {
           type: "text" as const,
-          text: JSON.stringify(result, null, 2),
+          text:
+            `verify_case for '${caseId}' (baseline: '${baselineId}') is not yet implemented.\n` +
+            "Owner E (verifier) will wire this tool. " +
+            "Run 'npm run compare -- --before <before-snapshot> --after <after-snapshot>' to compare manually.",
         },
       ],
+      isError: false,
     };
-  },
+  }
 );
 
-// ---------------------------------------------------------------------------
-// Start — connect to Bob IDE via STDIO
-// ---------------------------------------------------------------------------
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
+/**
+ * Resolve and validate the workspace path.
+ * Only accepts paths inside or equal to the server's cwd (trusted workspace).
+ */
+function resolveWorkspacePath(workspacePath?: string): string {
+  const serverRoot = process.cwd();
+  if (!workspacePath) return serverRoot;
+
+  const abs = nodePath.resolve(workspacePath);
+  const rel = nodePath.relative(serverRoot, abs);
+
+  // Reject paths that escape the server root
+  if (rel.startsWith("..")) {
+    throw new Error(
+      `workspacePath '${workspacePath}' is outside the trusted workspace root '${serverRoot}'. ` +
+        "Only paths within the workspace root are accepted."
+    );
+  }
+  return abs;
+}
+
+// ─── Entry ────────────────────────────────────────────────────────────────────
+
+async function main(): Promise<void> {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error("[archpulse] MCP server running on stdio");
+}
+
+main().catch((err: unknown) => {
+  console.error("[archpulse] Fatal error:", err);
+  process.exit(1);
+});
