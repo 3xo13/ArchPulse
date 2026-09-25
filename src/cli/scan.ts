@@ -12,7 +12,7 @@
  * execution error (no usable output).
  */
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
@@ -156,44 +156,38 @@ function runDepcruise(
   scanScope: string,
   outputType: "json" | "err-html"
 ): string {
+  // spawnSync with shell:true is the most reliable cross-platform way to invoke
+  // npm .bin wrappers (which are .cmd files on Windows, shell scripts on Unix).
+  // The DEP0190 warning this produces on Node 24 is cosmetic — it does not affect
+  // correctness. depcruise is an internal tool invocation, not user-supplied input.
   const ext = process.platform === "win32" ? ".cmd" : "";
-  const depcruiseBin = path.join(repoRoot, "node_modules", ".bin", `depcruise${ext}`);
-  const bin = existsSync(depcruiseBin) ? depcruiseBin : "depcruise";
+  const bin = path.join(repoRoot, "node_modules", ".bin", `depcruise${ext}`);
 
-  try {
-    const result = execFileSync(
-      bin,
-      [
-        "--config", configPath,
-        "--output-type", outputType,
-        "--ts-config", path.join(repoRoot, "tsconfig.json"),
-        "--",
-        scanScope,
-      ],
-      {
-        cwd: repoRoot,
-        encoding: "utf8",
-        // depcruise exits 1 when violations exist — NOT a fatal error.
-        // We capture stdout regardless of exit code.
-        shell: process.platform === "win32",
-        stdio: ["ignore", "pipe", "pipe"],
-        // Allow large repos
-        maxBuffer: 20 * 1024 * 1024,
-      }
-    );
-    return result;
-  } catch (err: unknown) {
-    // execFileSync throws when exit code ≠ 0.
-    // If stdout has content it's a violation-exit (expected). Use it.
-    const execErr = err as NodeJS.ErrnoException & { stdout?: string; stderr?: string };
-    if (execErr.stdout && execErr.stdout.length > 0) {
-      return execErr.stdout;
-    }
-    const stderr = execErr.stderr ?? "";
-    throw new Error(
-      `dependency-cruiser failed with no usable output.\nstderr: ${stderr}`
-    );
+  const result = spawnSync(bin, [
+    "--config", configPath,
+    "--output-type", outputType,
+    "--ts-config", path.join(repoRoot, "tsconfig.json"),
+    "--",
+    scanScope,
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    shell: true,
+    maxBuffer: 20 * 1024 * 1024,
+  });
+
+  if (result.error) {
+    throw new Error(`dependency-cruiser could not be launched: ${result.error.message}`);
   }
+
+  // Exit code 1 means violations found — that is EXPECTED, stdout has the JSON.
+  // Only throw when stdout is empty (a genuine execution failure).
+  if (result.stdout && result.stdout.length > 0) {
+    return result.stdout;
+  }
+
+  const stderr = result.stderr ?? "";
+  throw new Error(`dependency-cruiser failed with no usable output.\nstderr: ${stderr}`);
 }
 
 function resolveGitMarker(repoRoot: string): string {
