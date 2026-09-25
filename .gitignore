@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.archpulse/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*

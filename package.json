@@ -1,0 +1,32 @@
+{
+  "name": "archpulse",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "ArchPulse — Bob IDE add-on for guided architecture violation repair",
+  "private": true,
+  "workspaces": [
+    "demo/packages/*"
+  ],
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "lint": "eslint src",
+    "scan": "tsx src/cli/index.ts scan",
+    "cases": "tsx src/cli/index.ts cases",
+    "compare": "tsx src/cli/index.ts compare",
+    "start": "tsx src/mcp/server.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "dependency-cruiser": "^16.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "eslint": "^9.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
