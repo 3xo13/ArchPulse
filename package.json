@@ -17,7 +17,6 @@
     "start": "tsx src/mcp/server.ts"
   },
   "dependencies": {
-    "@esbuild/win32-x64": "^0.28.2",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "dependency-cruiser": "^16.0.0"
   },

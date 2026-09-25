@@ -156,7 +156,8 @@ function runDepcruise(
   scanScope: string,
   outputType: "json" | "dot-webpage"
 ): string {
-  const depcruiseBin = path.join(repoRoot, "node_modules", ".bin", "depcruise");
+  const ext = process.platform === "win32" ? ".cmd" : "";
+  const depcruiseBin = path.join(repoRoot, "node_modules", ".bin", `depcruise${ext}`);
   const bin = existsSync(depcruiseBin) ? depcruiseBin : "depcruise";
 
   try {
@@ -174,6 +175,7 @@ function runDepcruise(
         encoding: "utf8",
         // depcruise exits 1 when violations exist — NOT a fatal error.
         // We capture stdout regardless of exit code.
+        shell: process.platform === "win32",
         stdio: ["ignore", "pipe", "pipe"],
         // Allow large repos
         maxBuffer: 20 * 1024 * 1024,
