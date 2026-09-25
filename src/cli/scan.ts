@@ -16,6 +16,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { normalizeSnapshot, type Snapshot } from "../core/snapshot.js";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -56,9 +57,10 @@ interface ArchConfig {
  * persist artifacts, and return a compact summary.
  */
 export async function runScan(options: ScanOptions = {}): Promise<ScanSummary> {
-  const repoRoot = options.repoRoot ?? process.cwd();
+  // Normalize backslashes so Windows-style paths work with path.resolve
+  const repoRoot = (options.repoRoot ?? process.cwd()).replace(/\\/g, "/");
   const configPath = options.configPath
-    ? path.resolve(repoRoot, options.configPath)
+    ? path.resolve(repoRoot, options.configPath.replace(/\\/g, "/"))
     : path.join(repoRoot, ".dependency-cruiser.cjs");
 
   if (!existsSync(configPath)) {
@@ -71,7 +73,10 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanSummary> {
     ? (JSON.parse(readFileSync(archConfigPath, "utf8")) as ArchConfig)
     : {};
 
-  const scanScope = options.scanScope ?? archConfig.scanScope ?? "src";
+  const scanScope = path.resolve(
+    repoRoot,
+    (options.scanScope ?? archConfig.scanScope ?? "src").replace(/\\/g, "/")
+  );
   const layerMap = archConfig.layers ?? [];
 
   const outDir = options.outDir
@@ -89,8 +94,11 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanSummary> {
   // ── Scanner version ────────────────────────────────────────────────────────
   const scannerVersion = resolveScannerVersion(repoRoot);
 
+  // ── Resolve tsconfig path ──────────────────────────────────────────────────
+  const tsconfigPath = path.resolve(repoRoot, "tsconfig.json");
+
   // ── Run depcruise → JSON ───────────────────────────────────────────────────
-  const jsonOutput = runDepcruise(repoRoot, configPath, scanScope, "json");
+  const jsonOutput = runDepcruise(repoRoot, configPath, scanScope, "json", tsconfigPath);
 
   let rawJson: unknown;
   try {
@@ -118,7 +126,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanSummary> {
 
   // ── Run depcruise → graph.html ─────────────────────────────────────────────
   const graphPath = path.join(outDir, "graph.html");
-  const dotOutput = runDepcruise(repoRoot, configPath, scanScope, "err-html");
+  const dotOutput = runDepcruise(repoRoot, configPath, scanScope, "err-html", tsconfigPath);
   writeFileSync(graphPath, dotOutput, "utf8");
 
   // ── Build summary ──────────────────────────────────────────────────────────
@@ -146,6 +154,25 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanSummary> {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
+ * Resolve the absolute path to dependency-cruise.mjs bundled with ArchPulse.
+ * We walk up from this file's location to find the repo root's node_modules.
+ */
+function resolveDepcruiseBin(): string {
+  // __dirname equivalent for ESM: src/cli/ → ../../node_modules/...
+  const thisDir = path.dirname(fileURLToPath(import.meta.url));
+  // thisDir is <archpulseRoot>/src/cli (or dist/cli after build)
+  // walk up two levels to reach <archpulseRoot>
+  const archpulseRoot = path.resolve(thisDir, "..", "..");
+  return path.join(
+    archpulseRoot,
+    "node_modules",
+    "dependency-cruiser",
+    "bin",
+    "dependency-cruise.mjs"
+  );
+}
+
+/**
  * Invoke dependency-cruiser and return stdout as a string.
  * depcruise exits nonzero when violations are found — that is EXPECTED.
  * We only throw on true execution failures (missing binary, bad config).
@@ -154,19 +181,19 @@ function runDepcruise(
   repoRoot: string,
   configPath: string,
   scanScope: string,
-  outputType: "json" | "err-html"
+  outputType: "json" | "err-html",
+  tsconfigPath: string
 ): string {
-  const ext = process.platform === "win32" ? ".cmd" : "";
-  const depcruiseBin = path.join(repoRoot, "node_modules", ".bin", `depcruise${ext}`);
-  const bin = existsSync(depcruiseBin) ? depcruiseBin : "depcruise";
+  const depcruiseBin = resolveDepcruiseBin();
 
   try {
     const result = execFileSync(
-      bin,
+      process.execPath,
       [
+        depcruiseBin,
         "--config", configPath,
         "--output-type", outputType,
-        "--ts-config", path.join(repoRoot, "tsconfig.json"),
+        "--ts-config", tsconfigPath,
         "--",
         scanScope,
       ],
@@ -175,7 +202,7 @@ function runDepcruise(
         encoding: "utf8",
         // depcruise exits 1 when violations exist — NOT a fatal error.
         // We capture stdout regardless of exit code.
-        shell: process.platform === "win32",
+        shell: false,
         stdio: ["ignore", "pipe", "pipe"],
         // Allow large repos
         maxBuffer: 20 * 1024 * 1024,
