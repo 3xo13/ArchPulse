@@ -118,7 +118,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanSummary> {
 
   // ── Run depcruise → graph.html ─────────────────────────────────────────────
   const graphPath = path.join(outDir, "graph.html");
-  const dotOutput = runDepcruise(repoRoot, configPath, scanScope, "dot-webpage");
+  const dotOutput = runDepcruise(repoRoot, configPath, scanScope, "err-html");
   writeFileSync(graphPath, dotOutput, "utf8");
 
   // ── Build summary ──────────────────────────────────────────────────────────
@@ -154,7 +154,7 @@ function runDepcruise(
   repoRoot: string,
   configPath: string,
   scanScope: string,
-  outputType: "json" | "dot-webpage"
+  outputType: "json" | "err-html"
 ): string {
   const ext = process.platform === "win32" ? ".cmd" : "";
   const depcruiseBin = path.join(repoRoot, "node_modules", ".bin", `depcruise${ext}`);
