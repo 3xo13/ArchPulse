@@ -3,16 +3,18 @@
  *
  * Invokes dependency-cruiser programmatically:
  *  1. Runs `--output-type json` to get machine-readable violations.
- *  2. Runs `--output-type dot-webpage` to produce graph.html.
- *  3. Normalizes the JSON into a Snapshot and writes snapshot.json.
- *  4. Returns a compact ScanSummary for MCP / CLI consumers.
+ *  2. Reuses the raw JSON result to produce a DOT string via format().
+ *  3. Renders DOT → SVG with @viz-js/viz (no system Graphviz required).
+ *  4. Pipes SVG through wrap-stream-in-html.mjs to get interactive HTML.
+ *  5. Normalizes the JSON into a Snapshot and writes snapshot.json + graph.html.
+ *  6. Returns a compact ScanSummary for MCP / CLI consumers.
  *
  * Key constraint: depcruise exits nonzero when violations are found.
  * We distinguish that expected case (valid JSON output) from a real
  * execution error (no usable output).
  */
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
@@ -98,7 +100,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanSummary> {
   const tsconfigPath = path.resolve(repoRoot, "tsconfig.json");
 
   // ── Run depcruise → JSON ───────────────────────────────────────────────────
-  const jsonOutput = runDepcruise(repoRoot, configPath, scanScope, "json", tsconfigPath);
+  const jsonOutput = runDepcruise(repoRoot, configPath, scanScope, tsconfigPath);
 
   let rawJson: unknown;
   try {
@@ -124,10 +126,10 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanSummary> {
   const snapshotPath = path.join(outDir, "snapshot.json");
   writeFileSync(snapshotPath, JSON.stringify(snapshot, null, 2), "utf8");
 
-  // ── Run depcruise → graph.html ─────────────────────────────────────────────
+  // ── Generate graph.html from rawJson (no second depcruise invocation) ──────
   const graphPath = path.join(outDir, "graph.html");
-  const dotOutput = runDepcruise(repoRoot, configPath, scanScope, "err-html", tsconfigPath);
-  writeFileSync(graphPath, dotOutput, "utf8");
+  const graphHtml = await generateGraphHtml(rawJson);
+  writeFileSync(graphPath, graphHtml, "utf8");
 
   // ── Build summary ──────────────────────────────────────────────────────────
   const errorCount = snapshot.violations.filter((v) => v.severity === "error").length;
@@ -154,17 +156,20 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanSummary> {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
+ * Resolve ArchPulse's own node_modules root from this file's location.
+ * Works both from src/cli/ (tsx) and dist/cli/ (compiled).
+ */
+function resolveArchpulseRoot(): string {
+  const thisDir = path.dirname(fileURLToPath(import.meta.url));
+  return path.resolve(thisDir, "..", "..");
+}
+
+/**
  * Resolve the absolute path to dependency-cruise.mjs bundled with ArchPulse.
- * We walk up from this file's location to find the repo root's node_modules.
  */
 function resolveDepcruiseBin(): string {
-  // __dirname equivalent for ESM: src/cli/ → ../../node_modules/...
-  const thisDir = path.dirname(fileURLToPath(import.meta.url));
-  // thisDir is <archpulseRoot>/src/cli (or dist/cli after build)
-  // walk up two levels to reach <archpulseRoot>
-  const archpulseRoot = path.resolve(thisDir, "..", "..");
   return path.join(
-    archpulseRoot,
+    resolveArchpulseRoot(),
     "node_modules",
     "dependency-cruiser",
     "bin",
@@ -173,7 +178,7 @@ function resolveDepcruiseBin(): string {
 }
 
 /**
- * Invoke dependency-cruiser and return stdout as a string.
+ * Invoke dependency-cruiser for JSON output and return stdout as a string.
  * depcruise exits nonzero when violations are found — that is EXPECTED.
  * We only throw on true execution failures (missing binary, bad config).
  */
@@ -181,7 +186,6 @@ function runDepcruise(
   repoRoot: string,
   configPath: string,
   scanScope: string,
-  outputType: "json" | "err-html",
   tsconfigPath: string
 ): string {
   const depcruiseBin = resolveDepcruiseBin();
@@ -192,7 +196,7 @@ function runDepcruise(
       [
         depcruiseBin,
         "--config", configPath,
-        "--output-type", outputType,
+        "--output-type", "json",
         "--ts-config", tsconfigPath,
         "--",
         scanScope,
@@ -221,6 +225,73 @@ function runDepcruise(
       `dependency-cruiser failed with no usable output.\nstderr: ${stderr}`
     );
   }
+}
+
+/**
+ * Generate interactive graph HTML from a raw depcruise JSON result.
+ *
+ * Steps:
+ *  1. Format the cruise result as DOT using dependency-cruiser's JS API.
+ *  2. Render DOT → SVG with @viz-js/viz (bundled WASM; no system Graphviz).
+ *  3. Pipe SVG through wrap-stream-in-html.mjs via process.execPath to get
+ *     the interactive HTML (with dep-cruiser's stylesheet + script).
+ */
+async function generateGraphHtml(rawJson: unknown): Promise<string> {
+  const archpulseRoot = resolveArchpulseRoot();
+
+  // ── Step 1: DOT string from depcruise format() ────────────────────────────
+  const dcMainPath = path.join(
+    archpulseRoot,
+    "node_modules",
+    "dependency-cruiser",
+    "src",
+    "main",
+    "index.mjs"
+  );
+  const { format } = (await import(dcMainPath)) as {
+    format: (result: unknown, opts: { outputType: string }) => Promise<{ output: string; exitCode: number }>;
+  };
+  const { output: dot } = await format(rawJson, { outputType: "dot" });
+
+  // ── Step 2: SVG from @viz-js/viz ──────────────────────────────────────────
+  const { instance } = (await import("@viz-js/viz")) as {
+    instance: () => Promise<{ renderString: (dot: string) => string }>;
+  };
+  let svg: string;
+  try {
+    const viz = await instance();
+    svg = viz.renderString(dot);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Viz.js failed to render the dependency graph DOT string: ${msg}`);
+  }
+
+  // ── Step 3: HTML via wrap-stream-in-html.mjs ──────────────────────────────
+  const wrapBin = path.join(
+    archpulseRoot,
+    "node_modules",
+    "dependency-cruiser",
+    "bin",
+    "wrap-stream-in-html.mjs"
+  );
+  const wrapResult = spawnSync(
+    process.execPath,
+    [wrapBin],
+    {
+      input: svg,
+      encoding: "utf8",
+      shell: false,
+      maxBuffer: 20 * 1024 * 1024,
+    }
+  );
+  if (wrapResult.status !== 0 || !wrapResult.stdout) {
+    const stderr = wrapResult.stderr ?? "";
+    throw new Error(
+      `wrap-stream-in-html.mjs failed (exit ${wrapResult.status ?? "null"}).\nstderr: ${stderr}`
+    );
+  }
+
+  return wrapResult.stdout;
 }
 
 function resolveGitMarker(repoRoot: string): string {
