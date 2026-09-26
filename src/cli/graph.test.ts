@@ -1,103 +1,61 @@
-/**
- * Tests for graph HTML generation.
- *
- * Because built-in node module exports (childProcess.spawnSync, etc.) are
- * non-configurable in ESM and cannot be spied on with vi.spyOn, we test
- * the graph generation logic via real integration runs and by verifying
- * scan.ts source-level invariants about how the wrap-stream-in-html.mjs
- * binary is invoked.
- */
-
-import { describe, it, expect } from "vitest";
+import { it, expect } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { fileURLToPath } from "node:url";
-import { readFileSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
+import { spawnSync } from "node:child_process";
+import { runScan } from "./scan.js";
 
-const thisDir = path.dirname(fileURLToPath(import.meta.url));
-const ARCHPULSE_ROOT = path.resolve(thisDir, "..", "..");
-
-// ─── Source code invariants ───────────────────────────────────────────────────
-// We verify by reading the scan.ts source that the correct invocation pattern
-// is present. This is a white-box test that catches regressions in the
-// invocation code without requiring actual process spawning.
-
-describe("graph generation — spawnSync command (source invariant)", () => {
-  it("scan.ts invokes wrap-stream-in-html.mjs via process.execPath (not 'dot')", () => {
-    const scanSrc = readFileSync(
-      path.join(ARCHPULSE_ROOT, "src", "cli", "scan.ts"),
-      "utf8"
-    );
-
-    // The spawnSync call must use process.execPath as the command
-    expect(scanSrc).toContain("spawnSync(");
-    expect(scanSrc).toContain("process.execPath");
-    expect(scanSrc).toContain("wrap-stream-in-html.mjs");
-
-    // It must NOT invoke "dot" (system Graphviz)
-    expect(scanSrc).not.toMatch(/spawnSync\s*\(\s*["']dot["']/);
-    expect(scanSrc).not.toMatch(/execFileSync\s*\(\s*["']dot["']/);
-  });
-
-  it("scan.ts uses shell: false for the wrap-stream-in-html.mjs invocation", () => {
-    const scanSrc = readFileSync(
-      path.join(ARCHPULSE_ROOT, "src", "cli", "scan.ts"),
-      "utf8"
-    );
-    // shell: false must appear in the spawnSync options
-    expect(scanSrc).toContain("shell: false");
-  });
+const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+it("generates an offline interactive graph from the real CLI (no Vitest module rewriting)", { timeout: 30000 }, () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "archpulse graph & paths "));
+  try {
+    const loader = pathToFileURL(createRequire(import.meta.url).resolve("tsx/esm")).href;
+    const result = spawnSync(process.execPath, ["--import", loader,
+      path.join(repo, "src/cli/index.ts"), "scan", "--repo", ".", "--out", temp], {
+      cwd: repo, encoding: "utf8", timeout: 25000,
+      env: { ...process.env, PATH: path.dirname(process.execPath) },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const html = fs.readFileSync(path.join(temp, "graph.html"), "utf8");
+    expect(html).toContain("<svg");
+    expect(html).toContain('class="node"');
+    expect(html).toContain('class="edge"');
+    expect(html).toContain("<script>");
+    expect(html).toContain("highlight");
+    expect(html).not.toMatch(/<(?:script|link)[^>]+(?:src|href)=["']https?:/);
+    const snapshot = JSON.parse(fs.readFileSync(path.join(temp, "snapshot.json"), "utf8"));
+    expect(snapshot.root).toBe("demo/packages");
+    expect(snapshot.violations.map((v: { rule: string }) => v.rule).sort()).toEqual(["shared-no-domain", "ui-no-db"]);
+  } finally { fs.rmSync(temp, { recursive: true, force: true }); }
 });
 
-// ─── Viz.js error propagation (source invariant) ─────────────────────────────
-
-describe("graph generation — Viz.js error propagation (source invariant)", () => {
-  it("scan.ts wraps viz.renderString in try/catch and throws a descriptive error", () => {
-    const scanSrc = readFileSync(
-      path.join(ARCHPULSE_ROOT, "src", "cli", "scan.ts"),
-      "utf8"
-    );
-
-    // The try/catch around renderString must rethrow with a descriptive message
-    expect(scanSrc).toContain("renderString");
-    expect(scanSrc).toContain("Viz.js failed");
-    expect(scanSrc).toContain("catch");
-  });
+it("resolves returned artifact paths on the temp drive", { timeout: 30000 }, async () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "archpulse-graph-"));
+  try {
+    const summary = await runScan({ repoRoot: repo, outDir: temp });
+    expect(fs.existsSync(path.resolve(repo, summary.graphPath))).toBe(true);
+    expect(fs.existsSync(path.resolve(repo, summary.snapshotPath))).toBe(true);
+    expect(summary.incompleteResolutionCount).toBe(0);
+  } finally { fs.rmSync(temp, { recursive: true, force: true }); }
 });
 
-// ─── Integration: generated HTML contains <svg and <g ─────────────────────────
-
-describe("graph generation — HTML content (integration)", () => {
-  const nodeMajor = parseInt(process.versions.node.split(".")[0]!, 10);
-  const runIt = nodeMajor >= 20 ? it : it.skip;
-
-  runIt(
-    "graph HTML from a real scan contains <svg and at least one <g",
-    { timeout: 90_000 },
-    async () => {
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archpulse-graph-test-"));
-      try {
-        const { runScan } = await import("./scan.js");
-        const outRelDir = path.relative(
-          ARCHPULSE_ROOT,
-          path.join(tmpDir, "out")
-        );
-        const summary = await runScan({
-          repoRoot: ARCHPULSE_ROOT,
-          scanScope: "demo/packages",
-          outDir: outRelDir,
-        });
-
-        const graphPath = path.join(ARCHPULSE_ROOT, summary.graphPath);
-        expect(fs.existsSync(graphPath)).toBe(true);
-
-        const html = fs.readFileSync(graphPath, "utf8");
-        expect(html).toContain("<svg");
-        expect(html).toContain("<g");
-      } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      }
-    }
-  );
+it("scans a real cycle and missing import in a separate workspace without a tsconfig", { timeout: 30000 }, async () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "archpulse-cycle-"));
+  try {
+    fs.mkdirSync(path.join(temp, "src"));
+    fs.writeFileSync(path.join(temp, ".dependency-cruiser.cjs"),
+      'module.exports = { forbidden: [{ name: "no-circular", severity: "error", from: {}, to: { circular: true } }] };');
+    fs.writeFileSync(path.join(temp, "src/a.js"), 'import "./b.js"; import "./missing.js"; export const a = 1;');
+    fs.writeFileSync(path.join(temp, "src/b.js"), 'import "./a.js"; export const b = 2;');
+    const summary = await runScan({ repoRoot: temp });
+    expect(summary.incompleteResolutionCount).toBe(1);
+    expect(summary.scannerWarnings.join(" ")).toContain("incomplete");
+    const snapshot = JSON.parse(fs.readFileSync(path.resolve(temp, summary.snapshotPath), "utf8"));
+    expect(snapshot.root).toBe("src");
+    expect(snapshot.scannerVersion).toMatch(/^dependency-cruiser@\d/);
+    expect(snapshot.violations.find((v: { rule: string }) => v.rule === "no-circular").cyclePath.sort())
+      .toEqual(["src/a.js", "src/b.js"]);
+  } finally { fs.rmSync(temp, { recursive: true, force: true }); }
 });

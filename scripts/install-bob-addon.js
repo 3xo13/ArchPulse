@@ -1,168 +1,49 @@
 #!/usr/bin/env node
-/**
- * install-bob-addon.js — ESM installer for the ArchPulse Bob add-on.
- *
- * Usage:
- *   node scripts/install-bob-addon.js              # self-install (portable)
- *   node scripts/install-bob-addon.js /path/to/ws  # external install (absolute paths)
- */
-
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function fail(msg) {
-  console.error(`\nERROR: ${msg}`);
-  process.exit(1);
+function object(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function readMcpJson(mcpPath) {
-  if (!fs.existsSync(mcpPath)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(mcpPath, "utf8"));
-  } catch {
-    fail(`Could not parse existing ${mcpPath} — fix or remove it before retrying.`);
+function install() {
+  if (Number(process.versions.node.split(".")[0]) < 20) throw new Error("Node >= 20 is required.");
+  const addon = fs.realpathSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
+  const target = fs.realpathSync(path.resolve(process.argv[2] ?? addon));
+  if (!fs.statSync(target).isDirectory()) throw new Error("Target workspace must be a directory.");
+  const self = target === addon;
+  const server = path.join(addon, "src/mcp/server.ts");
+  const loader = fileURLToPath(import.meta.resolve("tsx/esm"));
+  const sourceSkill = path.join(addon, ".bob/skills/archpulse/SKILL.md");
+  for (const file of [path.join(addon, "package.json"), server, loader, sourceSkill]) {
+    if (!fs.statSync(file).isFile()) throw new Error(`Required installation file is missing: ${file}`);
   }
-}
-
-function writeMcpJson(mcpPath, data) {
+  // Read and validate everything before modifying the target.
+  const skill = fs.readFileSync(sourceSkill);
+  const mcpPath = path.join(target, ".bob/mcp.json");
+  const existing = fs.existsSync(mcpPath) ? JSON.parse(fs.readFileSync(mcpPath, "utf8")) : {};
+  if (!object(existing) || (existing.mcpServers !== undefined && !object(existing.mcpServers))) {
+    throw new Error("Existing MCP configuration and mcpServers must be JSON objects.");
+  }
+  const entry = {
+    type: "stdio", command: "node",
+    args: self ? ["--import", "tsx/esm", "src/mcp/server.ts"] : ["--import", pathToFileURL(loader).href, server],
+    env: { ARCHPULSE_ROOT: self ? "${workspaceFolder}" : target },
+  };
+  const targetSkill = path.join(target, ".bob/skills/archpulse/SKILL.md");
+  let copySkill = !self;
+  if (fs.existsSync(targetSkill) && fs.realpathSync(targetSkill) === fs.realpathSync(sourceSkill)) copySkill = false;
+  if (copySkill) {
+    fs.mkdirSync(path.dirname(targetSkill), { recursive: true });
+    fs.writeFileSync(targetSkill, skill);
+  }
+  const content = JSON.stringify({ ...existing, mcpServers: { ...existing.mcpServers, archpulse: entry } }, null, 2) + "\n";
   fs.mkdirSync(path.dirname(mcpPath), { recursive: true });
-  fs.writeFileSync(mcpPath, JSON.stringify(data, null, 2) + "\n", "utf8");
+  if (!fs.existsSync(mcpPath) || fs.readFileSync(mcpPath, "utf8") !== content) fs.writeFileSync(mcpPath, content);
+  console.log(`ArchPulse installed in ${target}. ${copySkill ? "Skill copied." : "Skipping skill copy: same source."}`);
+  console.log("Reload Bob IDE to load the MCP server.");
 }
 
-// ---------------------------------------------------------------------------
-// Prerequisite checks
-// ---------------------------------------------------------------------------
-
-const [nodeMajor] = process.versions.node.split(".").map(Number);
-if (nodeMajor < 20) {
-  fail(`Node ≥ 20 is required (found ${process.versions.node}).`);
-}
-
-// Determine ArchPulse root (this file lives at <root>/scripts/install-bob-addon.js)
-const archpulseRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-
-// Verify ArchPulse package.json is readable
-const archpulsePkgPath = path.join(archpulseRoot, "package.json");
-if (!fs.existsSync(archpulsePkgPath)) {
-  fail(`Cannot read ${archpulsePkgPath} — is the ArchPulse installation intact?`);
-}
-
-// ---------------------------------------------------------------------------
-// Determine target workspace
-// ---------------------------------------------------------------------------
-
-const targetArg = process.argv[2];
-const targetWorkspace = targetArg ? path.resolve(targetArg) : archpulseRoot;
-
-if (!fs.existsSync(targetWorkspace)) {
-  fail(`Target directory does not exist: ${targetWorkspace}`);
-}
-
-const isSelfInstall = targetWorkspace === archpulseRoot;
-
-// ---------------------------------------------------------------------------
-// Build the MCP entry
-// ---------------------------------------------------------------------------
-
-let mcpEntry;
-
-if (isSelfInstall) {
-  // Portable entry — uses relative/short paths and Bob's ${workspaceFolder} variable.
-  // Bob expands ${workspaceFolder} before spawning the server process.
-  console.log("Mode: self-install (portable, committable entry)");
-  mcpEntry = {
-    type: "stdio",
-    command: "node",
-    args: ["--import", "tsx/esm", "src/mcp/server.ts"],
-    env: { ARCHPULSE_ROOT: "${workspaceFolder}" },
-  };
-} else {
-  // External install — use absolute paths so the server launches correctly
-  // regardless of the target workspace's working directory or installed packages.
-  console.log(`Mode: external install → ${targetWorkspace}`);
-
-  // Resolve tsx ESM loader by requiring it from within ArchPulse's node_modules.
-  // The bare specifier "tsx/esm" resolves to the .mjs loader; we prefer that.
-  let absLoaderPath;
-  const candidates = [
-    path.join(archpulseRoot, "node_modules", "tsx", "dist", "esm", "index.mjs"),
-    path.join(archpulseRoot, "node_modules", "tsx", "dist", "esm", "index.cjs"),
-  ];
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
-      absLoaderPath = candidate;
-      break;
-    }
-  }
-  if (!absLoaderPath) {
-    fail(
-      `tsx ESM loader not found in ArchPulse node_modules.\n` +
-        `Expected one of:\n  ${candidates.join("\n  ")}\n` +
-        `Run \`npm install\` in ${archpulseRoot} and retry.`
-    );
-  }
-
-  const absServerPath = path.join(archpulseRoot, "src", "mcp", "server.ts");
-  if (!fs.existsSync(absServerPath)) {
-    fail(`Server entry not found: ${absServerPath}`);
-  }
-
-  // On Windows, Node requires file:// URLs for --import with absolute paths.
-  const loaderArg =
-    process.platform === "win32"
-      ? pathToFileURL(absLoaderPath).href
-      : absLoaderPath;
-
-  mcpEntry = {
-    type: "stdio",
-    command: "node",
-    args: ["--import", loaderArg, absServerPath],
-    env: { ARCHPULSE_ROOT: targetWorkspace },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Merge archpulse key into target .bob/mcp.json
-// ---------------------------------------------------------------------------
-
-const targetBobDir = path.join(targetWorkspace, ".bob");
-const targetMcpPath = path.join(targetBobDir, "mcp.json");
-
-const existing = readMcpJson(targetMcpPath);
-const merged = {
-  ...existing,
-  mcpServers: {
-    ...(existing.mcpServers ?? {}),
-    archpulse: mcpEntry,
-  },
-};
-
-writeMcpJson(targetMcpPath, merged);
-console.log(`✓ Wrote MCP entry to ${targetMcpPath}`);
-
-// ---------------------------------------------------------------------------
-// Copy skill file (skip when source and target resolve to the same path)
-// ---------------------------------------------------------------------------
-
-const sourceSkillDir = path.resolve(path.join(archpulseRoot, ".bob", "skills", "archpulse"));
-const targetSkillDir = path.resolve(path.join(targetWorkspace, ".bob", "skills", "archpulse"));
-
-if (sourceSkillDir === targetSkillDir) {
-  console.log("✓ Skill directory is the same as source — skipping copy.");
-} else {
-  const sourceSkillFile = path.join(sourceSkillDir, "SKILL.md");
-  if (!fs.existsSync(sourceSkillFile)) {
-    fail(`Source skill file not found: ${sourceSkillFile}`);
-  }
-  fs.mkdirSync(targetSkillDir, { recursive: true });
-  const targetSkillFile = path.join(targetSkillDir, "SKILL.md");
-  fs.copyFileSync(sourceSkillFile, targetSkillFile);
-  console.log(`✓ Copied SKILL.md to ${targetSkillFile}`);
-}
-
-console.log("\nArchPulse Bob add-on installed successfully.");
+try { install(); }
+catch (error) { console.error(`Installation failed: ${error.message}`); process.exitCode = 1; }

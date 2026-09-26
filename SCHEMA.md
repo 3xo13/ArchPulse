@@ -102,7 +102,13 @@ interface VerifyResult {
 }
 ```
 
-`status: "invalid"` is returned when `snapshot.configHash` values differ between before and after.
+`status: "invalid"` is returned when snapshot configuration hashes or scan scopes differ,
+either snapshot has unresolved dependencies, the selected case is empty, or selected
+violation IDs are missing from the baseline. Legacy absolute scan scopes require a rescan.
+
+The implemented `compareSnapshots` helper returns architecture differences only. Any new
+violation (error, warning, or info) prevents a `verified` comparison. Its status does not
+assert that tests or typechecking passed; complete `VerifyResult` orchestration is pending.
 
 **Example fixture:** `artifacts/example/result.json`
 

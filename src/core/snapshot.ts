@@ -82,10 +82,11 @@ export interface Snapshot {
  *   // → "demo/packages/ui/src/orderService.ts"
  */
 export function normalizePath(filePath: string, repoRoot?: string): string {
-  const root = repoRoot ?? process.cwd();
-  const abs = nodePath.isAbsolute(filePath)
-    ? filePath
-    : nodePath.resolve(root, filePath);
+  const root = (repoRoot ?? process.cwd()).replace(/\\/g, "/");
+  const normalized = filePath.replace(/\\/g, "/");
+  const abs = nodePath.isAbsolute(normalized)
+    ? normalized
+    : nodePath.resolve(root, normalized);
   return nodePath.relative(root, abs).replace(/\\/g, "/");
 }
 
@@ -272,6 +273,9 @@ export function normalizeSnapshot(
   const scannerWarnings: string[] = rawWarnings.map((w) =>
     typeof w === "string" ? w : w.message
   );
+  if (incompleteCount > 0) {
+    scannerWarnings.push(`${incompleteCount} dependency edge(s) could not be resolved; scan coverage is incomplete.`);
+  }
 
   return {
     schemaVersion: "1",

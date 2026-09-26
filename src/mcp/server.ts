@@ -18,11 +18,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod/v4";
 import { runScan } from "../cli/scan.js";
+import { trustedWorkspaceRoot, validateWithinWorkspace } from "../core/workspace.js";
+export { validateWithinWorkspace } from "../core/workspace.js";
 
-// ─── Trusted workspace root ───────────────────────────────────────────────────
-// Bob expands ${workspaceFolder} before spawning the server, so ARCHPULSE_ROOT
-// is already a plain filesystem path — no variable expansion needed here.
-const ARCHPULSE_ROOT: string = process.env.ARCHPULSE_ROOT ?? process.cwd();
 
 // ─── Server setup ─────────────────────────────────────────────────────────────
 
@@ -45,7 +43,7 @@ server.registerTool(
         .string()
         .optional()
         .describe(
-          "Absolute path to the repository root. Defaults to the server's working directory. " +
+          "Path to the repository root, relative to ARCHPULSE_ROOT if not absolute. Defaults to the trusted root. " +
             "Must be within the trusted workspace; paths outside are rejected."
         ),
       outDir: z
@@ -61,25 +59,25 @@ server.registerTool(
     console.error(`[archpulse] scan_repository called — workspacePath: ${workspacePath ?? "(default)"}`);
 
     try {
-      // Resolve workspacePath against ARCHPULSE_ROOT (handles relative inputs)
+      const ARCHPULSE_ROOT = trustedWorkspaceRoot();
+      // Resolve workspacePath against the trusted root.
       const repoRoot = workspacePath
         ? nodePath.resolve(ARCHPULSE_ROOT, workspacePath)
         : ARCHPULSE_ROOT;
       validateWithinWorkspace(repoRoot, ARCHPULSE_ROOT);
+      if (!fs.statSync(repoRoot).isDirectory()) throw new Error("workspacePath must be a directory.");
 
       // Resolve and validate outDir
       const resolvedOutDir = outDir
         ? nodePath.resolve(repoRoot, outDir)
         : nodePath.join(repoRoot, ".archpulse", "latest");
-      if (outDir) {
-        validateWithinWorkspace(resolvedOutDir, ARCHPULSE_ROOT);
-      }
+      validateWithinWorkspace(resolvedOutDir, repoRoot);
 
       // Validate artifact paths before writing
       const snapshotPath = nodePath.join(resolvedOutDir, "snapshot.json");
       const graphPath = nodePath.join(resolvedOutDir, "graph.html");
-      validateWithinWorkspace(snapshotPath, ARCHPULSE_ROOT);
-      validateWithinWorkspace(graphPath, ARCHPULSE_ROOT);
+      validateWithinWorkspace(snapshotPath, repoRoot);
+      validateWithinWorkspace(graphPath, repoRoot);
 
       console.error(`[archpulse] scan_repository — root: ${repoRoot}, outDir: ${resolvedOutDir}`);
 
@@ -89,7 +87,7 @@ server.registerTool(
       });
 
       const lines: string[] = [
-        `Scan complete — ${summary.violationCount} violation(s) found (${summary.errorCount} error, ${summary.warnCount} warn).`,
+        `Scan ${summary.incompleteResolutionCount ? "incomplete" : "complete"} — ${summary.violationCount} violation(s) found (${summary.errorCount} error, ${summary.warnCount} warn).`,
         `Git marker: ${summary.gitMarker}`,
         `Config hash: ${summary.configHash.slice(0, 12)}...`,
         `Snapshot saved to: ${summary.snapshotPath}`,
@@ -97,8 +95,12 @@ server.registerTool(
         "",
       ];
 
+      lines.push(`Unresolved dependency edges: ${summary.incompleteResolutionCount}`);
+      for (const warning of summary.scannerWarnings.slice(0, 10)) lines.push(`Warning: ${warning}`);
+      if (summary.scannerWarnings.length > 10) lines.push("Additional warnings are saved in snapshot.json.");
+
       if (summary.violations.length === 0) {
-        lines.push("No rule violations detected.");
+        lines.push(summary.incompleteResolutionCount ? "No violations detected among resolved dependencies; coverage is incomplete." : "No rule violations detected.");
       } else {
         lines.push(`Violations:`);
         const MAX_VIOLATIONS = 10;
@@ -152,7 +154,7 @@ server.registerTool(
           text:
             `get_case for '${caseId}' is not yet implemented.\n` +
             "Owner C (grouping) will wire this tool. " +
-            "Run 'npm run cases -- --snapshot .archpulse/latest/snapshot.json' to generate case packets.",
+            "Case generation is pending integration.",
         },
       ],
       isError: true,
@@ -191,66 +193,13 @@ server.registerTool(
           text:
             `verify_case for '${caseId}' (baseline: '${baselineId}') is not yet implemented.\n` +
             "Owner E (verifier) will wire this tool. " +
-            "Run 'npm run compare -- --before <before-snapshot> --after <after-snapshot>' to compare manually.",
+            "Verification orchestration and the compare CLI are pending integration.",
         },
       ],
       isError: true,
     };
   }
 );
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Validate that `candidatePath` is within `trustedRoot`.
- *
- * Because `candidatePath` (e.g. outDir, artifact paths) may not exist yet,
- * we walk up to the nearest existing ancestor and resolve symlinks there.
- * This prevents symlink/junction traversal while still allowing new directories.
- *
- * On win32, cross-drive paths are also rejected.
- *
- * Throws a descriptive Error if validation fails.
- */
-export function validateWithinWorkspace(candidatePath: string, trustedRoot: string): void {
-  // trustedRoot must already exist
-  const realRoot = fs.realpathSync(trustedRoot);
-
-  // Walk up candidatePath until we find an existing ancestor
-  let ancestor = candidatePath;
-  while (!fs.existsSync(ancestor)) {
-    const parent = nodePath.dirname(ancestor);
-    if (parent === ancestor) {
-      // Reached filesystem root without finding an existing directory
-      throw new Error(
-        `Path '${candidatePath}' has no existing ancestor on the filesystem.`
-      );
-    }
-    ancestor = parent;
-  }
-  const realAncestor = fs.realpathSync(ancestor);
-
-  // On Windows, reject cross-drive paths
-  if (process.platform === "win32") {
-    const rootDrive = realRoot.slice(0, 2).toUpperCase();
-    const ancestorDrive = realAncestor.slice(0, 2).toUpperCase();
-    if (rootDrive !== ancestorDrive) {
-      throw new Error(
-        `Path '${candidatePath}' is on drive '${ancestorDrive}' which differs from ` +
-          `the trusted workspace drive '${rootDrive}'. Cross-drive paths are not allowed.`
-      );
-    }
-  }
-
-  // Reject paths that escape the trusted root via relative traversal
-  const rel = nodePath.relative(realRoot, realAncestor);
-  if (rel.startsWith("..")) {
-    throw new Error(
-      `Path '${candidatePath}' resolves outside the trusted workspace root '${trustedRoot}'. ` +
-        "Only paths within the workspace are accepted."
-    );
-  }
-}
 
 // ─── Entry ────────────────────────────────────────────────────────────────────
 

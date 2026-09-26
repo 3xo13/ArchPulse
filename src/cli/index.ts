@@ -67,10 +67,14 @@ async function cmdScan(flags: Record<string, string>): Promise<void> {
   );
   console.error(`  snapshot → ${summary.snapshotPath}`);
   console.error(`  graph    → ${summary.graphPath}`);
+  console.error(`  unresolved dependency edges: ${summary.incompleteResolutionCount}`);
+  for (const warning of summary.scannerWarnings) console.error(`  Warning: ${warning}`);
 
   // Print a human-readable table of violations to stdout
   if (summary.violations.length === 0) {
-    console.log("No violations found.");
+    console.log(summary.incompleteResolutionCount
+      ? "No violations detected among resolved dependencies; scan coverage is incomplete."
+      : "No violations found.");
   } else {
     console.log(`\nViolations (${summary.violationCount}):\n`);
     for (const v of summary.violations) {

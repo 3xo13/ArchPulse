@@ -9,7 +9,6 @@
   ],
   "scripts": {
     "build": "tsc --project tsconfig.json",
-    "install": "node scripts/install-bob-addon.js",
     "lint": "eslint src",
     "test": "vitest run",
     "install:addon": "node scripts/install-bob-addon.js",

@@ -1,182 +1,86 @@
-/**
- * src/core/compare.ts
- *
- * Compare two snapshot JSON files for a specific case neighborhood.
- *
- * Exports:
- *   compareSnapshots  — load before/after snapshots, guard configHash,
- *                       return resolved/persistent/new violation sets.
- *
- * Compare contract (ARCHPULSE_EXECUTION_PLAN.md §4):
- *   - Requires matching configHash values; returns status "invalid" otherwise.
- *   - Scopes resolved/persistent classification to the case's violation IDs.
- *   - Detects newViolations across the FULL after-snapshot so nothing hides.
- */
-
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import type { Snapshot, SnapshotViolation } from "./snapshot.js";
+import * as path from "node:path";
+import type { SnapshotViolation } from "./snapshot.js";
+import { comparisonSnapshotSchema } from "./validation.js";
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
-
-/**
- * Minimal case-packet shape needed by compareSnapshots.
- * Matches the CasePacket interface defined in SCHEMA.md.
- */
 export interface CasePacket {
   caseId: string;
   violations: SnapshotViolation[];
 }
 
 export interface CompareResult {
-  /** gitMarker of the before-snapshot */
   baselineId: string;
-  /** gitMarker of the after-snapshot */
   afterId: string;
-  /** Violations present in before but absent in after (for the case neighborhood) */
   resolvedViolations: SnapshotViolation[];
-  /** Violations present in both snapshots (for the case neighborhood) */
   persistentViolations: SnapshotViolation[];
-  /**
-   * Violations absent in before but present in after.
-   * Scanned across the FULL after-snapshot, not just the case neighborhood,
-   * so genuinely new rule violations introduced by the refactor are surfaced.
-   */
   newViolations: SnapshotViolation[];
-  /**
-   * "verified"  — case violations resolved, no new violations introduced
-   * "partial"   — some case violations resolved but not all
-   * "failed"    — no case violations resolved
-   * "invalid"   — configHash mismatch; comparison is not meaningful
-   */
+  /** Architecture comparison only: does not assert tests/typechecks passed. */
   status: "verified" | "partial" | "failed" | "invalid";
   reason: string;
 }
 
-// ---------------------------------------------------------------------------
-// compareSnapshots
-// ---------------------------------------------------------------------------
-
-/**
- * Load two snapshot JSON files and compute the violation diff for a case.
- *
- * @param beforePath - Path to the before-snapshot JSON (absolute or cwd-relative).
- * @param afterPath  - Path to the after-snapshot JSON (absolute or cwd-relative).
- * @param casePacket - The case whose violations define the neighborhood to classify.
- *
- * @example
- *   const result = compareSnapshots(
- *     ".archpulse/before/snapshot.json",
- *     ".archpulse/after/snapshot.json",
- *     casePacket,
- *   );
- *   if (result.status === "invalid") { ... }
- */
-export function compareSnapshots(
-  beforePath: string,
-  afterPath: string,
-  casePacket: CasePacket,
-): CompareResult {
+export function compareSnapshots(beforePath: string, afterPath: string, casePacket: CasePacket): CompareResult {
   const before = loadSnapshot(beforePath);
   const after = loadSnapshot(afterPath);
-
-  // Guard: snapshots must have been produced under the same scanner config.
-  if (before.configHash !== after.configHash) {
-    return {
-      baselineId: before.gitMarker,
-      afterId: after.gitMarker,
-      resolvedViolations: [],
-      persistentViolations: [],
-      newViolations: [],
-      status: "invalid",
-      reason:
-        `configHash mismatch: before=${before.configHash} after=${after.configHash}. ` +
-        "The snapshots were produced under different scanner configurations and cannot be compared.",
-    };
+  const invalid = (reason: string): CompareResult => ({
+    baselineId: before.gitMarker, afterId: after.gitMarker,
+    resolvedViolations: [], persistentViolations: [], newViolations: [], status: "invalid", reason,
+  });
+  if (before.configHash !== after.configHash) return invalid("configHash mismatch; rescan with the same configuration.");
+  const scopes = [before.root, after.root].map(root => root.replace(/\\/g, "/"));
+  if (scopes.some(root => path.posix.isAbsolute(root) || path.win32.isAbsolute(root) || /^[A-Za-z]:/.test(root))) {
+    return invalid("Legacy absolute scan scope; rescan to create repository-relative snapshots.");
   }
-
-  // Build lookup maps keyed by violation ID.
-  const beforeById = indexById(before.violations);
-  const afterById = indexById(after.violations);
-
-  // Scope resolved/persistent classification to this case's violation IDs.
-  const caseIds = new Set(casePacket.violations.map((v) => v.id));
-
+  const [beforeScope, afterScope] = scopes.map(root => path.posix.normalize(root).replace(/\/$/, "") || ".");
+  if (beforeScope !== afterScope) return invalid("Scan scope mismatch; rescan the same scope.");
+  if (before.incompleteResolutionCount > 0 || after.incompleteResolutionCount > 0) {
+    return invalid("Unresolved dependencies make scan coverage incomplete; fix resolution and rescan.");
+  }
+  if (!casePacket || !Array.isArray(casePacket.violations) || casePacket.violations.length === 0) {
+    return invalid("The selected case must contain baseline violations.");
+  }
+  const beforeById = new Map(before.violations.map(v => [v.id, v]));
+  const afterById = new Map(after.violations.map(v => [v.id, v]));
+  if (beforeById.size !== before.violations.length || afterById.size !== after.violations.length) {
+    return invalid("Snapshot contains duplicate violation IDs; rescan.");
+  }
+  const caseIds = new Set(casePacket.violations.map(v => v?.id));
+  if ([...caseIds].some(id => !beforeById.has(id))) return invalid("Case violation IDs are missing from the baseline.");
   const resolvedViolations: SnapshotViolation[] = [];
   const persistentViolations: SnapshotViolation[] = [];
-
   for (const id of caseIds) {
-    const inBefore = beforeById.has(id);
-    const inAfter = afterById.has(id);
-
-    if (inBefore && !inAfter) {
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      resolvedViolations.push(beforeById.get(id)!);
-    } else if (inBefore && inAfter) {
-      // Use the after object — most current evidence.
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      persistentViolations.push(afterById.get(id)!);
-    }
-    // If the ID was in the case but never in before (data anomaly), ignore.
+    const original = beforeById.get(id)!;
+    const current = afterById.get(id);
+    if (current) persistentViolations.push(current);
+    else resolvedViolations.push(original);
   }
-
-  // New violations: present in after but absent in before — full snapshot scope.
-  const newViolations: SnapshotViolation[] = [];
-  for (const [id, violation] of afterById) {
-    if (!beforeById.has(id)) {
-      newViolations.push(violation);
-    }
-  }
-
-  // Derive status.
-  const totalCase = caseIds.size;
-  const resolvedCount = resolvedViolations.length;
-
+  const newViolations = after.violations.filter(v => !beforeById.has(v.id));
+  const resolved = resolvedViolations.length;
   let status: CompareResult["status"];
   let reason: string;
-
-  if (resolvedCount === totalCase && totalCase > 0) {
+  if (newViolations.length > 0) {
+    status = "failed";
+    reason = `${newViolations.length} new violation(s) introduced; ${resolved} of ${caseIds.size} selected violations resolved.`;
+  } else if (resolved === caseIds.size) {
     status = "verified";
-    reason = `All ${resolvedCount} case violation(s) resolved.`;
-  } else if (resolvedCount > 0) {
+    reason = `Architecture comparison passed: all ${resolved} selected violations resolved, with no new violations. Tests and typechecking were not run by this comparison.`;
+  } else if (resolved > 0) {
     status = "partial";
-    reason =
-      `${resolvedCount} of ${totalCase} case violation(s) resolved; ` +
-      `${persistentViolations.length} remain.`;
+    reason = `${resolved} of ${caseIds.size} selected violations resolved; ${persistentViolations.length} remain.`;
   } else {
     status = "failed";
-    reason = `No case violations were resolved (${totalCase} remain).`;
+    reason = `No selected violations resolved (${caseIds.size} remain).`;
   }
-
-  return {
-    baselineId: before.gitMarker,
-    afterId: after.gitMarker,
-    resolvedViolations,
-    persistentViolations,
-    newViolations,
-    status,
-    reason,
-  };
+  return { baselineId: before.gitMarker, afterId: after.gitMarker, resolvedViolations,
+    persistentViolations, newViolations, status, reason };
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function loadSnapshot(filePath: string): Snapshot {
-  const abs = resolve(process.cwd(), filePath);
-  const raw = readFileSync(abs, "utf-8");
-  return JSON.parse(raw) as Snapshot;
-}
-
-function indexById(
-  violations: SnapshotViolation[],
-): Map<string, SnapshotViolation> {
-  const map = new Map<string, SnapshotViolation>();
-  for (const v of violations) {
-    map.set(v.id, v);
-  }
-  return map;
+function loadSnapshot(filePath: string) {
+  const absolute = path.resolve(filePath);
+  let raw: unknown;
+  try { raw = JSON.parse(readFileSync(absolute, "utf8")); }
+  catch (error) { throw new Error(`Cannot read snapshot '${absolute}': ${String(error)}`); }
+  const parsed = comparisonSnapshotSchema.safeParse(raw);
+  if (!parsed.success) throw new Error(`Invalid snapshot '${absolute}': ${parsed.error.message}`);
+  return parsed.data;
 }
