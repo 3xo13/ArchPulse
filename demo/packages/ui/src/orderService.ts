@@ -1,15 +1,10 @@
 /**
  * ui/src/orderService.ts
- *
- * ARCHITECTURAL VIOLATION (forbidden boundary):
- * ui imports directly from db — the UI layer must not know about
- * the data-access layer. Only the domain layer should bridge them.
+ * Application service: orchestrates domain operations.
+ * Allowed dependencies: domain and shared only.
  */
 import { makeUserId, makeMoney } from "@demo/shared";
-import { createOrder, fulfillOrder } from "@demo/domain";
-
-// ⚠️  SEEDED VIOLATION: ui → db (forbidden cross-layer dependency)
-import { saveOrder, findOrdersByUser } from "@demo/db";
+import { createOrder, fulfillOrder, saveOrder, findOrdersByUser } from "@demo/domain";
 
 export function placeOrder(
   rawUserId: string,
