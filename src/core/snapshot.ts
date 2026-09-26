@@ -158,9 +158,10 @@ export function makeCycleId(cycleMembers: string[]): string {
 
 interface RawDcDependency {
   resolved: string;
+  couldNotResolve?: boolean;
   dependencyTypes?: string[];
   circular?: boolean;
-  cycle?: string[];
+  cycle?: Array<{ name: string }>;
   rules?: Array<{ name: string; severity: string }>;
 }
 
@@ -177,11 +178,13 @@ interface RawDcOutput {
       rule: { name: string; severity: string };
       from: string;
       to: string;
-      cycle?: string[];
+      cycle?: Array<{ name: string }>;
     }>;
     warn?: number;
     error?: number;
     info?: number;
+    /** Not part of the published API but safe to read if present */
+    warnings?: Array<string | { message: string }>;
   };
 }
 
@@ -242,7 +245,9 @@ export function normalizeSnapshot(
   for (const v of dc.summary?.violations ?? []) {
     const from = normalizePath(v.from, repoRoot);
     const to = normalizePath(v.to, repoRoot);
-    const cyclePath = v.cycle ? v.cycle.map((c) => normalizePath(c, repoRoot)) : null;
+    const cyclePath = v.cycle
+      ? v.cycle.map((c) => normalizePath(c.name, repoRoot))
+      : null;
     violations.push({
       id: makeViolationId(v.rule.name, from, to, cyclePath),
       rule: v.rule.name,
@@ -254,6 +259,20 @@ export function normalizeSnapshot(
     });
   }
 
+  // Count individual dependency edges where depcruise could not resolve the target.
+  let incompleteCount = 0;
+  for (const m of rawModules) {
+    for (const dep of m.dependencies ?? []) {
+      if (dep.couldNotResolve === true) incompleteCount++;
+    }
+  }
+
+  // Populate scannerWarnings from summary.warnings if the field is present.
+  const rawWarnings = dc.summary?.warnings ?? [];
+  const scannerWarnings: string[] = rawWarnings.map((w) =>
+    typeof w === "string" ? w : w.message
+  );
+
   return {
     schemaVersion: "1",
     root: scanRoot,
@@ -264,10 +283,8 @@ export function normalizeSnapshot(
     modules,
     edges,
     violations,
-    scannerWarnings: [],
-    incompleteResolutionCount: rawModules.filter(
-      (m) => m.dependencies?.some((d) => !d.resolved),
-    ).length,
+    scannerWarnings,
+    incompleteResolutionCount: incompleteCount,
   };
 }
 
