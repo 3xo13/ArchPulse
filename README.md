@@ -2,13 +2,13 @@
 
 > Ask Bob to scan a repository, repair one architectural violation with your approval, and prove the result with tests and a before/after architecture diff.
 
-ArchPulse is a Bob IDE add-on built for the **IBM Bob 2.0 Hackathon**. It gives Bob three local MCP tools backed by `dependency-cruiser`, plus a skill for the planned repair workflow: scan → investigate → propose → approve → fix → verify.
+ArchPulse is a Bob IDE add-on built for the **IBM Bob 2.0 Hackathon**. It gives Bob three local MCP tools backed by `dependency-cruiser`, plus a skill for the repair workflow: scan → investigate → propose → approve → fix → verify.
 
 ---
 
 ## Current implementation
 
-Scanning, offline graph generation, comparison helpers, and the allowlisted test runner are implemented. `get_case`, `verify_case`, and the `cases`/`compare` CLI commands remain explicit stubs on this branch. Case generation, verification orchestration, and the results viewer are pending integration.
+Scanning, immutable baselines, case generation, architecture comparison, and full verification are implemented through the CLI and MCP. Verification runs every configured test and typecheck before reporting success. The results viewer and recorded demo workflow remain separate workstreams.
 
 ## Prerequisites
 
@@ -81,7 +81,7 @@ Runs regression and demo tests across `src/` and `demo/packages/`.
 npm run scan -- --repo . --scope demo/packages --out .archpulse/before
 ```
 
-Produces:
+Prints an immutable `Baseline: .archpulse/scans/<id>/snapshot.json` path to retain for later verification. Also produces:
 - `.archpulse/before/snapshot.json` — normalized violation snapshot
 - `.archpulse/before/graph.html` — interactive dependency graph
 
@@ -91,9 +91,32 @@ Produces:
 
 `compareSnapshots(beforePath, afterPath, casePacket)` compares architecture only. It rejects incompatible scopes/configurations, incomplete resolution, empty cases, and missing baseline IDs. Any new violation blocks success, including warnings and info. A `verified` comparison does not assert tests or typechecking passed. Rescan older snapshots with absolute `root` fields before comparing.
 
-`runTestCommand(index, repoRoot?)` executes only commands indexed in the workspace allowlist. Quoted arguments are preserved without shell expansion. npm/npx are launched through Node; npx runs offline with automatic package installation disabled. Install workspace test dependencies first. Captured output is bounded to 500 lines or 256 KiB.
+`runTestCommand(index, repoRoot?)` executes only commands indexed in the workspace allowlist. Quoted arguments are preserved without shell expansion. npm/npx are launched through Node; npx runs offline with automatic package installation disabled; allowlisted npx commands must not override installation/offline flags. Install workspace test dependencies first. Captured output is bounded to 500 lines or 256 KiB.
 
-The `cases` and `compare` CLI commands remain unimplemented; they do not currently produce case packets or result reports.
+### Generate cases and verify a repair
+
+Use the immutable baseline path printed by the scan, and choose a case from the returned index:
+
+```bash
+npm run cases -- --snapshot .archpulse/scans/<id>/snapshot.json
+npm run verify -- --before .archpulse/scans/<id>/snapshot.json --case case-001 --out .archpulse/result
+```
+
+`verify` runs **all** `testCommands` and `typecheckCommands` from `config/architecture.json`, then rescans with the baseline's config and scope. Both allowlists must be nonempty. This repository checks all four demo packages, including shared, and typechecks the application and every demo package. External projects must configure their own checks; the installer does not invent them.
+
+Inspect `.archpulse/result/result.json` and `result.md`. A `verified` result requires passing checks, every selected violation resolved, and no newly introduced violations of any severity. Unrelated baseline violations remain visible in the report. Missing configuration or unusable scan evidence produces `invalid`; failures, timeouts, and cancellation never produce success. Numeric check code `-1` means checks could not run or were incomplete.
+
+For architecture-only comparison of two saved snapshots:
+
+```bash
+npm run compare -- --before .archpulse/scans/<before-id>/snapshot.json --after .archpulse/scans/<after-id>/snapshot.json --case case-001 --out .archpulse/comparison
+```
+
+This writes `comparison.json`, not `result.json`, and does not run tests or typechecking. Legacy fixture pairs remain usable when their case packet is beside the baseline (or in its `cases/` directory). Full verification requires a newly captured baseline with provenance.
+
+Case IDs remain stable for unchanged groups within a repository. Do not assume the example fixture's case numbering matches a fresh repository. Immutable scan generations keep their own case packets; the latest-scan pointer does not change an earlier baseline. Regenerating a mutable case directory removes obsolete owned packets while preserving unrelated files.
+
+Commands default to a 120-second timeout; verification has a ten-minute execution deadline. Ctrl+C cancels CLI work. CLI exit codes are 0 for success, 1 for failed/partial outcomes, and 2 for invalid input or infrastructure failures. MCP summaries are limited to 2 KiB and link to complete artifacts.
 
 ### Start the MCP server manually (for debugging)
 
@@ -105,10 +128,10 @@ npm start
 
 ## Bob IDE workflow
 
-The following workflow is planned and requires case generation and verification integration. Currently Bob can call `scan_repository`; `get_case` and `verify_case` return explicit errors.
+Call `scan_repository` and save its immutable baseline ID. `get_case` accepts that baseline ID (or defaults to the latest scan); `verify_case` requires it. All three tools accept an optional `workspacePath` within the trusted workspace. MCP artifacts stay within the selected repository. Only the CLI accepts explicit external output directories.
 
 **Step 1 — Plan mode** (investigation, no edits yet):
-> Use the ArchPulse skill. Call `scan_repository` for this workspace, then `get_case` for case-001. Inspect only the listed source files. Explain the cause and propose a minimal multi-file refactor. Do not edit source until I approve the plan.
+> Use the ArchPulse skill. Call `scan_repository` for this workspace, then `get_case` for a case from the returned index, using the saved baseline ID. Inspect only the listed source files. Explain the cause and propose a minimal multi-file refactor. Do not edit source until I approve the plan.
 
 **Step 2 — Review and approve** the proposed plan.
 
@@ -124,7 +147,7 @@ archpulse/
 ├── src/
 │   ├── mcp/server.ts          # STDIO MCP server — 3 Bob-callable tools
 │   ├── core/snapshot.ts       # Path normalization, config hash, violation IDs
-│   ├── cli/                   # Working scan; cases/compare stubs
+│   ├── cli/                   # Scan, cases, compare, and verify commands
 │   └── core/                  # Comparison, runner, validation, artifact utilities
 ├── demo/packages/             # npm workspace demo repo with seeded violations
 │   ├── shared/                # Value objects — no layer deps
@@ -148,8 +171,8 @@ archpulse/
 All tool outputs follow the schemas in [`SCHEMA.md`](SCHEMA.md):
 
 - **`snapshot.json`** — produced by `scan_repository` / `npm run scan`
-- **`case-<id>.json`** — planned case-generation output
-- **`result.json`** — planned verification output
+- **`case-<id>.json`** — generated case packets
+- **`result.json`** — full verification output
 
 Example fixtures committed in [`artifacts/example/`](artifacts/example/).
 

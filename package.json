@@ -15,7 +15,8 @@
     "scan": "tsx src/cli/index.ts scan",
     "cases": "tsx src/cli/index.ts cases",
     "compare": "tsx src/cli/index.ts compare",
-    "start": "tsx src/mcp/server.ts"
+    "start": "tsx src/mcp/server.ts",
+    "verify": "tsx src/cli/index.ts verify"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

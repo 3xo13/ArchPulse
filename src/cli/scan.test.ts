@@ -12,6 +12,7 @@ import { describe, it, expect } from "vitest";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeSnapshot } from "../core/snapshot.js";
+import { runScan } from "./scan.js";
 
 const thisDir = path.dirname(fileURLToPath(import.meta.url));
 // ArchPulse root is two levels up from src/cli/
@@ -19,7 +20,6 @@ const ARCHPULSE_ROOT = path.resolve(thisDir, "..", "..");
 
 describe("runScan — error handling", () => {
   it("throws a clear error when .dependency-cruiser.cjs config is missing", async () => {
-    const { runScan } = await import("./scan.js");
     // Use a path that definitely has no .dependency-cruiser.cjs
     await expect(
       runScan({ repoRoot: path.join(ARCHPULSE_ROOT, "nonexistent-dir-xyz") })
@@ -92,8 +92,7 @@ describe("runScan — integration (real demo repo circular dependency)", () => {
     "scan of demo/packages produces a circular-dependency violation with cyclePath populated",
     { timeout: 60_000 },
     async () => {
-      const { runScan } = await import("./scan.js");
-      const summary = await runScan({
+        const summary = await runScan({
         repoRoot: ARCHPULSE_ROOT,
         scanScope: "demo/packages",
         outDir: ".archpulse/test-run",
