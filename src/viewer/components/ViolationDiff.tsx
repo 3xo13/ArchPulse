@@ -4,7 +4,7 @@ import type { CasePacket, Snapshot, VerifyResult, Violation } from "../types";
 interface Props {
   casePacket: CasePacket;
   before: Snapshot;
-  after: Snapshot;
+  after?: Snapshot;
   result: VerifyResult | undefined;
 }
 

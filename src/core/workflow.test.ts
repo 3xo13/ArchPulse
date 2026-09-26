@@ -46,9 +46,28 @@ describe("captured workflow",()=>{
     expect(result.status,result.reason).toBe("verified");
     expect(result.testExitCode).toBe(0);expect(result.typecheckExitCode).toBe(0);
     expect(result.resolvedViolations).toHaveLength(1);expect(result.persistentViolations).toHaveLength(1);
-    expect(fs.existsSync(resultPath.replace(/\.json$/,".md"))).toBe(true);
+    expect(resultPath).toBeDefined();
+    expect(fs.existsSync(resultPath!.replace(/\.json$/,".md"))).toBe(true);
     expect(fs.readFileSync(path.resolve(f.root,scan.baselineId),"utf8")).toBe(original);
     expect(loadBaseline(f.root).manifest.id).not.toBe(loadBaseline(f.root,scan.baselineId).manifest.id);
+  });
+  it("runs the configured viewer typecheck and fails verification for a viewer type error", {timeout:45000}, async () => {
+    const f = fixture();
+    const policy = JSON.parse(fs.readFileSync(new URL("../../config/architecture.json", import.meta.url), "utf8")) as { typecheckCommands: string[] };
+    const command = policy.typecheckCommands.find(command => command.endsWith("src/viewer/tsconfig.json"));
+    expect(command).toBeDefined();
+    const tsc = createRequire(import.meta.url).resolve("typescript/bin/tsc");
+    f.config.typecheckCommands = [command!.replace("npx tsc", `node "${tsc}"`)];
+    f.write("config/architecture.json", json(f.config));
+    f.write("src/viewer/tsconfig.json", json({ compilerOptions: { strict: true, noEmit: true, types: [], skipLibCheck: true }, include: ["view.ts"] }));
+    f.write("src/viewer/view.ts", 'export const value: number = "wrong";');
+    const {scan, caseId} = await baseline(f); f.repair();
+    const failed = await verifyCase({repoRoot:f.root, baselineId:scan.baselineId, caseId});
+    expect(failed.result.status).toBe("failed"); expect(failed.result.typecheckExitCode).not.toBe(0);
+    expect(failed.result.testOutput).toContain("view.ts");
+    f.write("src/viewer/view.ts", "export const value: number = 1;");
+    const passed = await verifyCase({repoRoot:f.root, baselineId:scan.baselineId, caseId});
+    expect(passed.result.status, passed.result.reason).toBe("verified");
   });
   it("detects imported-rule changes and keeps output locations out of the fingerprint",{timeout:45000},async()=>{
     const f=fixture();const first=await runScan({repoRoot:f.root,outDir:".archpulse/one"});

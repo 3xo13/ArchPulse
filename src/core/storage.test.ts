@@ -26,3 +26,13 @@ it("releases the repository lock after errors and supports cancelling a waiting 
   await expect(withRepositoryLock(root,()=>{throw new Error("operation failure");})).rejects.toThrow(/operation failure/);
   await expect(withRepositoryLock(root,()=>42)).resolves.toBe(42);
 });
+it("checks cancellation after staging and preserves the previous artifacts", () => {
+  const root = directory(); const file = path.join(root, "result.json");
+  fs.writeFileSync(file, "previous");
+  const controller = new AbortController();
+  expect(() => publishFiles(new Map([[file, "new"]]), () => {
+    controller.abort(); controller.signal.throwIfAborted();
+  })).toThrow();
+  expect(fs.readFileSync(file, "utf8")).toBe("previous");
+  expect(fs.readdirSync(root)).toEqual(["result.json"]);
+});

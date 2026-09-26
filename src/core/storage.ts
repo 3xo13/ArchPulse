@@ -23,29 +23,31 @@ export function assertMutableOutput(root: string, target: string): void {
   if (isScanArchive(root,target)) throw new Error("Scan archives are immutable; choose a different output directory.");
 }
 
+export class RepositoryBusyError extends Error {}
+
 /** One repository writer, including across separate CLI/server processes. */
-export async function withRepositoryLock<T>(root: string, action: () => Promise<T> | T, signal?: AbortSignal): Promise<T> {
+export async function withRepositoryLock<T>(root: string, action: () => Promise<T> | T, signal?: AbortSignal, waitMs = 120_000): Promise<T> {
   const directory = internalPath(root);
   fs.mkdirSync(directory, { recursive: true });
   const lock = internalPath(root, "operation.lock");
-  const deadline = Date.now() + 120_000;
+  const deadline = Date.now() + waitMs;
   let fd: number;
   for (;;) {
     signal?.throwIfAborted();
     try { fd = fs.openSync(lock, "wx"); break; }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      if (Date.now() >= deadline) throw new Error(`Repository is busy. If no ArchPulse process is running, remove stale lock: ${lock}`);
+      if (Date.now() >= deadline) throw new RepositoryBusyError(`Repository is busy. If no ArchPulse process is running, remove stale lock: ${lock}`);
       await delay(50, undefined, { signal });
     }
   }
   fs.writeFileSync(fd, String(process.pid));
-  try { return await action(); }
+  try { signal?.throwIfAborted(); return await action(); }
   finally { fs.closeSync(fd); fs.unlinkSync(lock); }
 }
 
 /** Stage all writes, then replace/delete only explicitly owned regular files. */
-export function publishFiles(changes: Map<string, string | null>): void {
+export function publishFiles(changes: Map<string, string | null>, beforeCommit?: () => void): void {
   const staged = new Map<string, string>();
   const backups = new Map<string, string>();
   const published: string[] = [];
@@ -63,6 +65,7 @@ export function publishFiles(changes: Map<string, string | null>): void {
         fs.writeFileSync(temporary, content, { encoding: "utf8", flag: "wx" });
       }
     }
+    beforeCommit?.();
     for (const file of changes.keys()) {
       if (fs.existsSync(file)) {
         const backup = `${file}.${token}.bak`;

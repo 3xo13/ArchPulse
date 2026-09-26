@@ -87,7 +87,7 @@ server.registerTool("verify_case", {
     // Validate the default storage root before verification starts.
     internalPath(root,"verifications");
     const {result,resultPath}=await verifyCase({repoRoot:root,caseId,baselineId,outDir:out,signal:extra?.signal,workspaceOnly:true});
-    return reply(`Result: ${relative(root,resultPath)}\n${result.status}: ${result.reason}\nTests: ${result.testExitCode}; typechecks: ${result.typecheckExitCode}`,result.status==="invalid");
+    return reply(`${resultPath ? `Result: ${relative(root,resultPath)}` : "Report not saved."}\n${result.status}: ${result.reason}\nTests: ${result.testExitCode}; typechecks: ${result.typecheckExitCode}`,result.status==="invalid");
   } catch(error) {return reply(`verify_case failed: ${String(error)}`,true);}
 });
 server.connect(new StdioServerTransport()).then(()=>console.error("[archpulse] MCP server running on stdio")).catch(error=>{

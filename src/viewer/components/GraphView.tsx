@@ -1,9 +1,10 @@
 import React, { useMemo, useState } from "react";
 import type { Snapshot } from "../types";
+import { focusedGraph, edgeKey } from "../graph";
 
 interface Props {
   before: Snapshot;
-  after: Snapshot;
+  after?: Snapshot;
   primaryFiles: string[];
 }
 
@@ -26,7 +27,7 @@ function layoutNodes(
   _primaryFiles: Set<string>
 ): Map<string, { x: number; y: number; layer: string }> {
   const layerOrder = ["shared", "domain", "db", "ui"];
-  const byLayer: Record<string, string[]> = {};
+  const byLayer: Record<string, string[]> = Object.create(null);
   for (const n of nodes) {
     const mod = snapshot.modules.find((m) => m.path === n);
     const layer = mod?.layer ?? "other";
@@ -63,20 +64,13 @@ function getLabel(path: string): string {
 function GraphCanvas({
   snapshot,
   primaryFiles,
-  violationEdges,
   canvasId,
 }: {
   snapshot: Snapshot;
   primaryFiles: Set<string>;
-  violationEdges: Set<string>;
   canvasId: string;
 }) {
-  const relevantEdges = snapshot.edges.filter(
-    (e) => primaryFiles.has(e.from) || primaryFiles.has(e.to)
-  );
-  const nodeSet = new Set<string>();
-  for (const e of relevantEdges) { nodeSet.add(e.from); nodeSet.add(e.to); }
-  for (const f of primaryFiles)  { nodeSet.add(f); }
+  const { edges: relevantEdges, nodes: nodeSet, highlighted: violationEdges } = focusedGraph(snapshot, primaryFiles);
 
   const nodeArray = Array.from(nodeSet);
   const positions = layoutNodes(nodeArray, snapshot, primaryFiles);
@@ -115,7 +109,7 @@ function GraphCanvas({
         const fp = positions.get(e.from);
         const tp = positions.get(e.to);
         if (!fp || !tp) return null;
-        const isViol = violationEdges.has(`${e.from}::${e.to}`);
+        const isViol = violationEdges.has(edgeKey(e.from, e.to));
         const x1 = fp.x + NODE_W / 2;
         const y1 = fp.y + NODE_H;
         const x2 = tp.x + NODE_W / 2;
@@ -137,7 +131,7 @@ function GraphCanvas({
         const pos    = positions.get(n)!;
         const mod    = snapshot.modules.find((m) => m.path === n);
         const layer  = mod?.layer ?? "other";
-        const colors = LAYER_COLORS[layer] ?? DEFAULT_NODE;
+        const colors = Object.hasOwn(LAYER_COLORS, layer) ? LAYER_COLORS[layer]! : DEFAULT_NODE;
         const isPrimary = primaryFiles.has(n);
         return (
           <g key={n} transform={`translate(${pos.x},${pos.y})`}>
@@ -177,16 +171,9 @@ export default function GraphView({ before, after, primaryFiles }: Props) {
   const [view, setView] = useState<"before" | "after">("before");
   const primarySet = useMemo(() => new Set(primaryFiles), [primaryFiles]);
 
-  const buildViolationEdges = (snapshot: Snapshot) =>
-    new Set(snapshot.violations.map((v) => `${v.from}::${v.to}`));
-
-  const beforeViolEdges = useMemo(() => buildViolationEdges(before), [before]);
-  const afterViolEdges  = useMemo(() => buildViolationEdges(after),  [after]);
-
-  const snapshot   = view === "before" ? before : after;
-  const violEdges  = view === "before" ? beforeViolEdges : afterViolEdges;
-  const violCount  = view === "before" ? before.violations.length : after.violations.length;
-  const gitMarker  = view === "before" ? before.gitMarker : after.gitMarker;
+  const snapshot = view === "after" && after ? after : before;
+  const violCount = snapshot.violations.length;
+  const gitMarker = snapshot.gitMarker;
 
   return (
     <section
@@ -235,11 +222,12 @@ export default function GraphView({ before, after, primaryFiles }: Props) {
         >
           {(["before", "after"] as const).map((v, idx) => {
             const active = view === v;
-            const count  = v === "before" ? before.violations.length : after.violations.length;
+            const count  = v === "before" ? before.violations.length : (after?.violations.length ?? 0);
             const noViol = count === 0;
             return (
               <button
                 key={v}
+                disabled={v === "after" && !after}
                 onClick={() => setView(v)}
                 style={{
                   padding: "6px 16px",
@@ -331,12 +319,13 @@ export default function GraphView({ before, after, primaryFiles }: Props) {
         </span>
       </div>
 
+      {!after && <p role="note" style={{ padding: "12px 18px" }}>After graph unavailable: this report has no completed comparison.</p>}
+      <p style={{ padding: "8px 18px" }}>Counts above cover the entire scan. This graph shows the selected files and related cycles.</p>
       {/* Graph canvas */}
       <div style={{ padding: "16px 18px", overflowX: "auto" }}>
         <GraphCanvas
           snapshot={snapshot}
           primaryFiles={primarySet}
-          violationEdges={violEdges}
           canvasId={view}
         />
       </div>

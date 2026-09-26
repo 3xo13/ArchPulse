@@ -90,6 +90,7 @@
   ],
   "typecheckCommands": [
     "npx tsc --noEmit --project tsconfig.json",
+    "npx tsc --noEmit --project src/viewer/tsconfig.json",
     "npx tsc --noEmit --project demo/packages/shared/tsconfig.json",
     "npx tsc --noEmit --project demo/packages/domain/tsconfig.json",
     "npx tsc --noEmit --project demo/packages/db/tsconfig.json",

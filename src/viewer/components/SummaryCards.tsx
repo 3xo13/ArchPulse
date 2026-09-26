@@ -1,8 +1,11 @@
 import React from "react";
+import { testSummary, checkOutcome } from "../checkSummary";
+import type { Execution } from "../report";
 import type { VerifyResult } from "../types";
 
 interface Props {
   result: VerifyResult;
+  execution?: Execution;
 }
 
 interface CardDef {
@@ -14,14 +17,8 @@ interface CardDef {
   icon: string;
 }
 
-function parseTestOutput(output: string): string {
-  // Extract "N passed" from lines like "Tests       14 passed (14)"
-  const m = output.match(/(\d+)\s+passed/);
-  return m ? `${m[1]} passed` : "—";
-}
-
-export default function SummaryCards({ result }: Props) {
-  const testSummary = parseTestOutput(result.testOutput);
+export default function SummaryCards({ result, execution }: Props) {
+  const summary = testSummary(result, execution);
   const cards: CardDef[] = [
     {
       label: "Status",
@@ -57,11 +54,17 @@ export default function SummaryCards({ result }: Props) {
     },
     {
       label: "Tests",
-      value: testSummary,
+      value: summary,
       bg: result.testExitCode === 0 ? "var(--green-bg, #f0fdf4)" : "var(--red-bg, #fff1f2)",
       border: result.testExitCode === 0 ? "var(--green-border, #bbf7d0)" : "var(--red-border, #fecdd3)",
       valueColor: result.testExitCode === 0 ? "var(--green, #16a34a)" : "var(--red, #dc2626)",
       icon: result.testExitCode === 0 ? "✓" : "✗",
+    },
+    {
+      label: "Typecheck", value: checkOutcome(result.typecheckExitCode),
+      bg: result.typecheckExitCode === 0 ? "#f0fdf4" : "#fff1f2",
+      border: result.typecheckExitCode === 0 ? "#bbf7d0" : "#fecdd3",
+      valueColor: result.typecheckExitCode === 0 ? "#15803d" : "#b91c1c", icon: "",
     },
   ];
 
@@ -69,7 +72,7 @@ export default function SummaryCards({ result }: Props) {
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "repeat(5, 1fr)",
+        gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
         gap: 10,
         marginBottom: 20,
       }}

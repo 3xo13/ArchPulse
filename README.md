@@ -8,7 +8,7 @@ ArchPulse is a Bob IDE add-on built for the **IBM Bob 2.0 Hackathon**. It gives 
 
 ## Current implementation
 
-Scanning, immutable baselines, case generation, architecture comparison, and full verification are implemented through the CLI and MCP. Verification runs every configured test and typecheck before reporting success. A React viewer displays the committed example artifacts; the recorded Bob demo workflow remains a separate workstream.
+Scanning, immutable baselines, case generation, architecture comparison, and full verification are implemented through the CLI and MCP. Verification runs every configured test and typecheck before reporting success. A React viewer displays clearly labeled examples and imported verification artifacts; the recorded Bob demo workflow remains a separate workstream.
 
 ## Prerequisites
 
@@ -125,7 +125,35 @@ npm run viewer:dev
 npm run viewer:build
 ```
 
-The development command prints a local URL. The production bundle is written to `dist/viewer/`. The viewer loads `artifacts/example/` at build time; it does not automatically load new scans. Source links currently point to the `feature/viewer` branch on GitHub. `npm run build` typechecks both the core application and viewer; `viewer:build` bundles the viewer for serving over HTTP.
+The development command prints a local URL. The production bundle is written to `dist/viewer/` and must be served over HTTP. `npm run build` typechecks both the core application and viewer.
+
+The viewer starts in **Example data** mode. To inspect a real run, open **Import verification results** and select:
+
+- **Before snapshot:** the immutable `snapshot.json` identified by the original scan's baseline ID.
+- **Case packet:** `cases/<case-id>.json` alongside that baseline snapshot.
+- **Verification result:** the `result.json` written by `verify` or `verify_case`.
+- **After snapshot:** the snapshot named by `afterSnapshotPath` in the result directory's `execution.json`.
+- **Execution details (optional):** that `execution.json`, for per-command output and supported test totals.
+
+Files remain in browser memory, are not uploaded, and are cleared on reload. Each file is limited to 20 MiB. Imports validate the public contracts and cross-check case and snapshot evidence before replacing the current view. They display recorded reports; they do not rerun checks or independently authenticate the files. An interrupted/invalid report with an empty `afterId` can be imported without an after snapshot; its after graph is disabled. **Show example** restores the demonstration.
+
+Checks display their recorded pass/fail/not-run outcomes. Counts are shown only for complete, recognized Vitest summaries; complete execution details allow counts across multiple commands. Unsupported, truncated, or incomplete output falls back to outcome only. Full captured output remains available.
+
+Under **Source link settings**, supply a GitHub repository URL and optional before/after revisions. Commit SHA markers are used automatically once a repository is provided. Labels such as `working-tree` and `post-repair` are not treated as revisions. Unknown provenance leaves paths copyable with links disabled; explicitly supplied revisions are not independently verified.
+
+The viewer TypeScript project is now a mandatory repository verification check, alongside the application and four demo packages. **Capture a fresh baseline after updating:** earlier baselines use a different verification policy and must be rescanned.
+
+Cancellation and the verification deadline remain active while waiting to publish reports. If the publication lock is occupied after cancellation, verification returns failure with **Report not saved** and preserves existing artifacts; it never points to a stale report as new evidence.
+
+Viewer validation:
+
+```bash
+npm test
+npx playwright install chromium
+npm run test:viewer
+```
+
+The first command includes DOM interaction tests. The last builds the production viewer and runs a Chromium smoke test using a temporary repository with real tests, typechecking, and a verified repair. Automated tests do not replace the Gate 1 and Gate 2 demonstrations inside Bob IDE.
 
 ### Start the MCP server manually (for debugging)
 

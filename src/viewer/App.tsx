@@ -4,7 +4,7 @@ import {
   beforeSnapshots,
   afterSnapshots,
   results,
-  GITHUB_BASE,
+
 } from "./data";
 import CaseList from "./components/CaseList";
 import StatusBadge from "./components/StatusBadge";
@@ -13,17 +13,27 @@ import ViolationDiff from "./components/ViolationDiff";
 import GraphView from "./components/GraphView";
 import SourceLinks from "./components/SourceLinks";
 
-const BRANCH = "feature/viewer";
+import ImportReport from "./components/ImportReport";
+import type { Report } from "./report";
+import { revisionFromMarker } from "./sourceUrl";
 
 export default function App() {
   const [selectedId, setSelectedId] = useState<string>(
     cases[0]?.caseId ?? ""
   );
 
-  const casePacket = cases.find((c) => c.caseId === selectedId);
-  const before     = beforeSnapshots[selectedId];
-  const after      = afterSnapshots[selectedId];
-  const result     = results[selectedId];
+  const [imported, setImported] = useState<Report>();
+  const [repository, setRepository] = useState("");
+  const [beforeRevision, setBeforeRevision] = useState("");
+  const [afterRevision, setAfterRevision] = useState("");
+  const casePacket = imported?.packet ?? cases.find((c) => c.caseId === selectedId);
+  const before = imported ? imported.before : beforeSnapshots[selectedId];
+  const after = imported ? imported.after : afterSnapshots[selectedId];
+  const result = imported ? imported.result : results[selectedId];
+  const importReport = (report: Report) => {
+    setImported(report); setSelectedId(report.packet.caseId);
+    setRepository(""); setBeforeRevision(""); setAfterRevision("");
+  };
 
   return (
     <div
@@ -96,12 +106,25 @@ export default function App() {
       </header>
 
       {/* ── Body ── */}
+      <div style={{ padding: "12px 24px", background: "#eff6ff" }}>
+        <strong>{imported ? "Imported report" : "Example data"}</strong>
+        <p>{imported ? "Recorded evidence supplied by you; importing does not rerun verification." : "This saved demonstration does not show the current repository's verification status."}</p>
+        <button onClick={() => { setImported(undefined); setSelectedId(cases[0]?.caseId ?? ""); setRepository(""); setBeforeRevision(""); setAfterRevision(""); }}>Show example</button>
+      </div>
+      <ImportReport onImport={importReport} />
+      <details style={{ margin: "12px 24px" }}>
+        <summary>Source link settings</summary>
+        <p>Links need a GitHub repository and a commit or revision. Explicit revisions are supplied by you, not verified by this viewer.</p>
+        <label>GitHub repository URL <input type="url" placeholder="https://github.com/owner/repository" value={repository} onChange={event => setRepository(event.target.value)} /></label>{" "}
+        <label>Before revision <input value={beforeRevision} placeholder={revisionFromMarker(before?.gitMarker) || "Enter a revision"} onChange={event => setBeforeRevision(event.target.value)} /></label>{" "}
+        <label>After revision <input value={afterRevision} placeholder={revisionFromMarker(after?.gitMarker) || "Enter a revision"} onChange={event => setAfterRevision(event.target.value)} /></label>
+      </details>
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
 
         {/* Sidebar */}
         <CaseList
-          cases={cases}
-          results={results}
+          cases={imported ? [imported.packet] : cases}
+          results={imported ? { [imported.packet.caseId]: imported.result } : results}
           selectedId={selectedId}
           onSelect={setSelectedId}
         />
@@ -115,7 +138,7 @@ export default function App() {
             minWidth: 0,
           }}
         >
-          {casePacket && before && after ? (
+          {casePacket && before ? (
             <>
               {/* ── Case header ── */}
               <div
@@ -189,7 +212,7 @@ export default function App() {
                         color: "var(--text, #1a1d21)",
                       }}
                     >
-                      {after.gitMarker}
+                      {after?.gitMarker ?? "Unavailable"}
                     </code>
                   </span>
                   <span style={{ color: "var(--faint, #8b949e)" }}>·</span>
@@ -203,7 +226,7 @@ export default function App() {
               </div>
 
               {/* ── Summary cards ── */}
-              {result && <SummaryCards result={result} />}
+              {result && <SummaryCards result={result} execution={imported?.execution} />}
 
               {/* ── Sections ── */}
               <ViolationDiff
@@ -214,16 +237,19 @@ export default function App() {
               />
 
               <GraphView
+                key={`${imported ? "imported" : "example"}-${before.timestamp}-${after?.timestamp ?? "none"}`}
                 before={before}
                 after={after}
                 primaryFiles={casePacket.primaryFiles}
               />
 
               <SourceLinks
+                execution={imported?.execution}
                 casePacket={casePacket}
                 result={result}
-                githubBase={GITHUB_BASE}
-                branch={BRANCH}
+                repository={repository}
+                beforeRevision={beforeRevision || revisionFromMarker(before.gitMarker)}
+                afterRevision={afterRevision || revisionFromMarker(after?.gitMarker)}
               />
             </>
           ) : (

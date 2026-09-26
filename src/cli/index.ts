@@ -36,7 +36,7 @@ compare checks architecture only; verify runs tests, typechecks, and a fresh sca
       if (!flags.before || !flags.case) throw new Error("--before and --case are required.");
       if (command==="verify") {
         const {result,resultPath}=await verifyCase({repoRoot:root,baselineId:flags.before,caseId:flags.case,outDir:flags.out,signal:controller.signal});
-        console.log(`${result.status}: ${result.reason}\nResult: ${resultPath}`);
+        console.log(`${result.status}: ${result.reason}\n${resultPath ? `Result: ${resultPath}` : "Report not saved."}`);
         process.exitCode=result.status==="verified" ? 0 : result.status==="invalid" ? 2 : 1;
       } else {
         if (!flags.after) throw new Error("--after is required for architecture-only comparison.");
