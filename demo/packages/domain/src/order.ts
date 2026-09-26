@@ -41,6 +41,10 @@ export function formatOrder(order: Order): string {
 
 const _store = new Map<string, Order>();
 
+export function clearOrders(): void {
+  _store.clear();
+}
+
 export function saveOrder(order: Order): void {
   _store.set(order.id, order);
 }

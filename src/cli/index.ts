@@ -12,6 +12,7 @@ const command=process.argv[2] ?? "help";
 const args=process.argv.slice(3);
 const controller=new AbortController();
 process.once("SIGINT",()=>controller.abort());
+process.once("SIGTERM",()=>controller.abort());
 try {
   if (command==="help" || command==="--help") {
     console.log(`ArchPulse CLI
@@ -21,7 +22,7 @@ compare --before <snapshot> --after <snapshot> --case <id> [--repo <path>] [--ou
 verify --before <baseline> --case <id> [--repo <path>] [--out <dir>]
 compare checks architecture only; verify runs tests, typechecks, and a fresh scan.`);
   } else if (command==="cases") {
-    await runCases(args);
+    await runCases(args,controller.signal);
   } else {
     const flags=parseFlags(args);
     const root=fs.realpathSync(path.resolve(flags.repo ?? process.cwd()));
@@ -41,14 +42,15 @@ compare checks architecture only; verify runs tests, typechecks, and a fresh sca
       } else {
         if (!flags.after) throw new Error("--after is required for architecture-only comparison.");
         const before=path.resolve(root,flags.before);
-        const selected=await getComparisonCase(root,flags.before,flags.case);
+        const selected=await getComparisonCase(root,flags.before,flags.case,controller.signal);
         const result=compareSnapshots(before,path.resolve(root,flags.after),selected);
         const out=path.resolve(root,flags.out ?? ".archpulse/comparison");
         assertMutableOutput(root,out);
-        await withRepositoryLock(root,()=>publishFiles(new Map([[path.join(out,"comparison.json"),json(result)]])));
+        await withRepositoryLock(root,()=>publishFiles(new Map([[path.join(out,"comparison.json"),json(result)]]),
+          () => controller.signal.throwIfAborted()),controller.signal);
         console.log(`${result.status}: ${result.reason}\nArchitecture only; tests and typechecks were not run.`);
         process.exitCode=result.status==="verified" ? 0 : result.status==="invalid" ? 2 : 1;
       }
     } else throw new Error(`Unknown command: ${command}`);
   }
-} catch (error) { console.error(String(error)); process.exitCode=2; }
+} catch (error) { console.error(String(error)); process.exitCode=controller.signal.aborted ? 1 : 2; }

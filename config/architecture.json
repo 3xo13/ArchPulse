@@ -9,7 +9,7 @@
     {
       "name": "db",
       "glob": "demo/packages/db/src/**",
-      "description": "Data-access layer. May depend on shared and domain types only."
+      "description": "Compatibility facade over the domain-owned in-memory store. May depend on shared and domain."
     },
     {
       "name": "domain",
@@ -31,7 +31,7 @@
     {
       "from": "db",
       "to": "domain",
-      "reason": "db may reference domain types for storage"
+      "reason": "db delegates persistence to the domain-owned demo store"
     },
     {
       "from": "domain",

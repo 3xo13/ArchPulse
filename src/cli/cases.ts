@@ -12,10 +12,10 @@ export function parseFlags(argv: string[]): Record<string,string> {
   }
   return flags;
 }
-export async function runCases(argv: string[]): Promise<RunCasesResult> {
+export async function runCases(argv: string[], signal?: AbortSignal): Promise<RunCasesResult> {
   const flags = parseFlags(argv);
   if (!flags.snapshot) throw new Error("Missing required argument: --snapshot <path>");
-  const result = await generateCases({ snapshotPath: flags.snapshot, repoRoot: flags.repo, outDir: flags.out, configPath: flags.config });
+  const result = await generateCases({ snapshotPath: flags.snapshot, repoRoot: flags.repo, outDir: flags.out, configPath: flags.config, signal });
   console.log(`${result.caseCount} case(s) written to: ${result.outDir}`);
   for (const entry of result.cases) console.log(`${entry.caseId}: ${entry.rule} (${entry.violationCount} violations)`);
   for (const id of result.oversizedCases) console.error(`${id}: full packet exceeds 2 KiB; MCP returns a bounded summary.`);

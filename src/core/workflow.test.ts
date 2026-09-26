@@ -11,6 +11,7 @@ import { verifyCase } from "./verify.js";
 import { compareSnapshots } from "./compare.js";
 import { runConfiguredCommand } from "./runner.js";
 import { json, readJson } from "./storage.js";
+import { validateReport } from "../viewer/report.js";
 
 const temporary: string[]=[];
 function fixture() {
@@ -33,6 +34,14 @@ async function baseline(f: ReturnType<typeof fixture>) {
   expect(cases.caseCount).toBe(2);
   return {scan,caseId:cases.cases[0]!.caseId};
 }
+async function assertImportable(root: string, baselineId: string, caseId: string, response: Awaited<ReturnType<typeof verifyCase>>) {
+  const selected=await getCase(root,caseId,baselineId);
+  const execution=readJson(path.join(path.dirname(response.resultPath!),"execution.json")) as {afterSnapshotPath?:string};
+  expect(execution.afterSnapshotPath).toBe(response.afterSnapshotPath);
+  const imported=validateReport({before:readJson(selected.snapshotPath),packet:selected.packet,result:response.result,execution,
+    ...(response.afterSnapshotPath ? {after:readJson(response.afterSnapshotPath)} : {})});
+  expect(imported.result.status).toBe(response.result.status);
+}
 describe("captured workflow",()=>{
   it("verifies a real repair, retains unrelated violations, and preserves the original baseline",{timeout:45000},async()=>{
     const f=fixture();
@@ -42,7 +51,9 @@ describe("captured workflow",()=>{
     const {scan,caseId}=await baseline(f);
     const original=fs.readFileSync(path.resolve(f.root,scan.baselineId),"utf8");
     f.repair();
-    const {result,resultPath}=await verifyCase({repoRoot:f.root,baselineId:scan.baselineId,caseId});
+    const response=await verifyCase({repoRoot:f.root,baselineId:scan.baselineId,caseId});
+    const {result,resultPath}=response;
+    await assertImportable(f.root,scan.baselineId,caseId,response);
     expect(result.status,result.reason).toBe("verified");
     expect(result.testExitCode).toBe(0);expect(result.typecheckExitCode).toBe(0);
     expect(result.resolvedViolations).toHaveLength(1);expect(result.persistentViolations).toHaveLength(1);
@@ -83,10 +94,29 @@ describe("captured workflow",()=>{
   });
   it("fingerprints inherited TypeScript settings",{timeout:45000},async()=>{
     const f=fixture();f.write("tsconfig.json",json({extends:"./base.json",include:["src"]}));
+    f.write(".dependency-cruiser.cjs",'module.exports={...require("./rules.cjs"),options:{tsConfig:{}}};');
     f.write("base.json",json({compilerOptions:{allowJs:true,strict:false}}));
     const before=await runScan({repoRoot:f.root});
     f.write("base.json",json({compilerOptions:{allowJs:true,strict:true}}));
     expect((await runScan({repoRoot:f.root})).configHash).not.toBe(before.configHash);
+  });
+  it.each(["root-relative", "nested-absolute"])("honors the selected %s TypeScript configuration instead of the root config",{timeout:45000},async mode=>{
+    const f=fixture();
+    f.write("tsconfig.json",json({compilerOptions:{baseUrl:".",paths:{"@target":["src/d.js"]}}}));
+    f.write("analysis/base.json",json({compilerOptions:{allowJs:true,baseUrl:"..",paths:{"@target":["src/b.js"]},strict:false}}));
+    const selected=mode==="root-relative" ? "tsconfig.scan.json" : "analysis/tsconfig.json";
+    f.write(selected,json({extends:mode==="root-relative"?"./analysis/base.json":"./base.json",include:[mode==="root-relative"?"src":"../src"]}));
+    const selectedPath=mode==="root-relative" ? selected : path.join(f.root,selected);
+    f.write(".dependency-cruiser.cjs",'module.exports={...require("./rules.cjs"),options:'+json({tsConfig:{fileName:selectedPath}})+'};');
+    f.write("src/a.js",'import "@target";');
+    const first=await runScan({repoRoot:f.root});
+    const snapshot=readJson(path.resolve(f.root,first.baselineId)) as {edges:Array<{from:string;to:string}>};
+    expect(snapshot.edges).toContainEqual(expect.objectContaining({from:"src/a.js",to:"src/b.js"}));
+    expect(first.incompleteResolutionCount).toBe(0);
+    f.write("tsconfig.json",json({compilerOptions:{strict:true}}));
+    expect((await runScan({repoRoot:f.root})).configHash).toBe(first.configHash);
+    f.write("analysis/base.json",json({compilerOptions:{allowJs:true,baseUrl:"..",paths:{"@target":["src/b.js"]},strict:true}}));
+    expect((await runScan({repoRoot:f.root})).configHash).not.toBe(first.configHash);
   });
   it.each(["tests","types","timeout","new","unchanged","policy","missing","mutating"])("handles verification outcome %s",{timeout:45000},async mode=>{
     const f=fixture();
@@ -99,7 +129,9 @@ describe("captured workflow",()=>{
     if(mode==="unchanged")f.write("src/a.js",'import "./b.js";');
     if(mode==="policy"){f.config.testCommands=['node -e "process.exit(0)"'];f.write("config/architecture.json",json(f.config));}
     if(mode==="mutating")f.write("checks/test.cjs",'require("fs").appendFileSync("src/b.js","\\n// mutation");');
-    const {result}=await verifyCase({repoRoot:f.root,baselineId:scan.baselineId,caseId,commandTimeoutMs:mode==="timeout"?500:120000});
+    const response=await verifyCase({repoRoot:f.root,baselineId:scan.baselineId,caseId,commandTimeoutMs:mode==="timeout"?500:120000});
+    const {result}=response;
+    await assertImportable(f.root,scan.baselineId,caseId,response);
     expect(result.status,result.reason).toBe(["policy","missing","mutating"].includes(mode)?"invalid":"failed");
     if(mode==="tests")expect(result.testExitCode).toBe(7);
     if(mode==="types")expect(result.typecheckExitCode).toBe(8);
@@ -112,6 +144,15 @@ describe("captured workflow",()=>{
     fs.appendFileSync(path.resolve(f.root,scan.baselineId)," ");
     expect(()=>loadBaseline(f.root,scan.baselineId)).toThrow(/modified/);
     expect(()=>loadBaseline(f.root,"working-tree")).toThrow(/ambiguous/);
+  });
+  it.each(["configuration", "cancelled", "report-directory"])("imports actual verification evidence after %s",{timeout:30000},async mode=>{
+    const f=fixture();const {scan,caseId}=await baseline(f);f.repair();
+    if(mode==="configuration")f.write("rules.cjs","module.exports={forbidden:[]};");
+    const controller=new AbortController();if(mode==="cancelled")controller.abort();
+    const response=await verifyCase({repoRoot:f.root,baselineId:scan.baselineId,caseId,signal:controller.signal,outDir:"reports"});
+    expect(response.result.status).toBe(mode==="configuration"?"invalid":mode==="cancelled"?"failed":"verified");
+    await assertImportable(f.root,scan.baselineId,caseId,response);
+    if(mode==="cancelled") {expect(response.afterSnapshotPath).toBeUndefined();expect(response.result.afterId).toBe("");}
   });
   it("reports partial resolution and scanner failures without false success",{timeout:45000},async()=>{
     const f=fixture();f.write("src/c.js",'import "./b.js";');

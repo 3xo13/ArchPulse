@@ -74,3 +74,36 @@ it("preserves both old artifacts when rendering fails", async () => {
   expect(fs.readFileSync(path.join(out, "graph.html"), "utf8")).toBe("old graph");
   expect(fs.readdirSync(out).sort()).toEqual(["graph.html", "snapshot.json"]);
 });
+
+it.each(["scanner", "graph"])("rejects input changes during %s without changing the previous generation", async stage => {
+  const out = path.join(temp, "output-with-source");
+  fs.mkdirSync(out); fs.writeFileSync(path.join(out, "source.ts"), "export const value = 1;");
+  await runScan({ repoRoot: temp, outDir: out });
+  const old = ["snapshot.json", "graph.html", "manifest.json"].map(name => fs.readFileSync(path.join(out, name), "utf8"));
+  const pointer = fs.readFileSync(path.join(temp, ".archpulse/latest-baseline.json"), "utf8");
+  const archives = fs.readdirSync(path.join(temp, ".archpulse/scans"));
+  vi.mocked(runProcess).mockImplementation(async (_file, args) => {
+    const graph = String(args[0]).endsWith("wrap-stream-in-html.mjs");
+    if (graph === (stage === "graph")) fs.appendFileSync(path.join(out, "source.ts"), "\n// changed during scan");
+    return result(graph ? "<html><svg></svg></html>" : JSON.stringify(raw()));
+  });
+  await expect(runScan({ repoRoot: temp, outDir: out })).rejects.toThrow("changed during scan");
+  expect(["snapshot.json", "graph.html", "manifest.json"].map(name => fs.readFileSync(path.join(out, name), "utf8"))).toEqual(old);
+  expect(fs.readFileSync(path.join(temp, ".archpulse/latest-baseline.json"), "utf8")).toBe(pointer);
+  expect(fs.readdirSync(path.join(temp, ".archpulse/scans"))).toEqual(archives);
+  expect(fs.existsSync(path.join(temp, ".archpulse/operation.lock"))).toBe(false);
+});
+
+it("allows repeat publication beside source files without mistaking its artifacts for edits", async () => {
+  fs.writeFileSync(path.join(temp, "source.ts"), "export const value = 1;");
+  await runScan({repoRoot:temp,outDir:temp});
+  await expect(runScan({repoRoot:temp,outDir:temp})).resolves.toMatchObject({violationCount:0});
+  expect(fs.readdirSync(temp).some(name => /\.(tmp|bak)$/.test(name))).toBe(false);
+});
+
+it("recognizes staged output reached through a repository directory link", async () => {
+  const actual=path.join(temp,"actual");fs.mkdirSync(actual);
+  const alias=path.join(temp,"alias");fs.symlinkSync(actual,alias,process.platform==="win32"?"junction":"dir");
+  await expect(runScan({repoRoot:temp,outDir:alias})).resolves.toMatchObject({violationCount:0});
+  expect(fs.existsSync(path.join(actual,"snapshot.json"))).toBe(true);
+});

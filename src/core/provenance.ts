@@ -4,7 +4,7 @@ import ts from "typescript";
 import type { ICruiseResult } from "dependency-cruiser";
 import { z } from "zod/v4";
 import { digest, internalPath, readJson } from "./storage.js";
-import { validateWithinWorkspace } from "./workspace.js";
+import { canonicalPath, validateWithinWorkspace } from "./workspace.js";
 
 const slash = (value: string) => value.replace(/\\/g, "/");
 export function stable(value: unknown): string {
@@ -27,9 +27,9 @@ export function configurationFingerprint(raw: ICruiseResult, root: string, scope
   const options = { ...raw.summary.optionsUsed } as Record<string, unknown>;
   for (const key of ["args", "outputTo", "outputType", "reporterOptions", "rulesFile", "cache", "metrics", "experimentalStats"]) delete options[key];
   const selectedTsconfig = options.tsConfig as { fileName?: string } | undefined;
-  const tsconfig = path.resolve(root, selectedTsconfig?.fileName ?? "tsconfig.json");
+  const tsconfig = selectedTsconfig?.fileName ? path.resolve(root, selectedTsconfig.fileName) : undefined;
   let typescript: unknown = null;
-  if (fs.existsSync(tsconfig)) {
+  if (tsconfig) {
     const parsed = ts.getParsedCommandLineOfConfigFile(tsconfig, { noEmit: true }, {
       ...ts.sys, onUnRecoverableConfigFileDiagnostic: diagnostic => { throw new Error(ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")); },
     });
@@ -104,12 +104,17 @@ export function loadBaseline(root: string, identifier?: string) {
 }
 
 /** Detect edits while checks run, excluding generated/cache/VCS directories. */
-export function sourceState(root: string): string {
+export function sourceState(root: string, ignoredFiles: readonly string[] = []): string {
+  const ignored = new Set(ignoredFiles.flatMap(file => {
+    const absolute = path.resolve(root, file);
+    return [absolute, canonicalPath(absolute)];
+  }));
   const entries: Array<[string,string]> = [];
   const visit = (directory: string) => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((a,b) => a.name.localeCompare(b.name))) {
       if ([".git", ".archpulse", "node_modules", "dist", "coverage"].includes(entry.name)) continue;
       const file = path.join(directory, entry.name);
+      if (ignored.has(file)) continue;
       if (entry.isSymbolicLink()) { entries.push([slash(path.relative(root,file)), fs.readlinkSync(file)]); continue; }
       if (entry.isDirectory()) visit(file);
       else if (entry.isFile()) entries.push([slash(path.relative(root,file)), digest(fs.readFileSync(file))]);

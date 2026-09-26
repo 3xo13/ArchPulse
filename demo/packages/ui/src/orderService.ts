@@ -14,13 +14,13 @@ export function placeOrder(
   const userId = makeUserId(rawUserId);
   const total = makeMoney(amount, currency);
   const order = createOrder(userId, total);
-  saveOrder(order); // ← direct db call from UI layer
+  saveOrder(order);
   return order.id;
 }
 
 export function getUserOrders(rawUserId: string) {
   const userId = makeUserId(rawUserId);
-  return findOrdersByUser(userId); // ← direct db call from UI layer
+  return findOrdersByUser(userId);
 }
 
 export function fulfil(order: ReturnType<typeof getUserOrders>[number]) {

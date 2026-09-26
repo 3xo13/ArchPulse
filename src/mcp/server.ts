@@ -8,10 +8,12 @@ import { runScan } from "../cli/scan.js";
 import { ensureBaselineCases, getCase } from "../core/cases.js";
 import { verifyCase } from "../core/verify.js";
 import { trustedWorkspaceRoot, validateWithinWorkspace } from "../core/workspace.js";
+import { createLifecycle } from "./lifecycle.js";
 import { internalPath } from "../core/storage.js";
 export { validateWithinWorkspace } from "../core/workspace.js";
 
 const server = new McpServer({ name: "archpulse", version: "0.1.0" });
+const lifecycle = createLifecycle(() => server.close());
 function workspace(candidate?: string): string {
   const trusted = trustedWorkspaceRoot();
   const root=path.resolve(trusted,candidate ?? ".");
@@ -39,7 +41,7 @@ const relative=(root:string,file:string)=>path.relative(root,file).replace(/\\/g
 server.registerTool("scan_repository", {
   description:"Scan the repository and return an immutable baseline ID, artifact paths, and a bounded case index. Unresolved dependencies make coverage incomplete.",
   inputSchema:z.object({ workspacePath:z.string().optional(),outDir:z.string().optional() }),
-},async ({workspacePath,outDir},extra)=>{
+},async ({workspacePath,outDir},extra)=>lifecycle.run(async()=>{
   try {
     const root=workspace(workspacePath);
     const out=output(root,outDir,["snapshot.json","graph.html","manifest.json"]);
@@ -60,11 +62,11 @@ server.registerTool("scan_repository", {
     if (scan.violations.length>10) lines.push(`${scan.violations.length-10} more violation(s) in the snapshot.`);
     return reply(lines.join("\n"));
   } catch(error) { return reply(`scan_repository failed: ${String(error)}`,true); }
-});
+}));
 server.registerTool("get_case", {
   description:"Get a case from a captured baseline. Defaults to the latest successful baseline for this repository; full JSON and Markdown remain on disk.",
   inputSchema:z.object({caseId:z.string(),workspacePath:z.string().optional(),baselineId:z.string().optional()}),
-},async ({caseId,workspacePath,baselineId},extra)=>{
+},async ({caseId,workspacePath,baselineId},extra)=>lifecycle.run(async()=>{
   try {
     const root=workspace(workspacePath);
     if(baselineId)validateWithinWorkspace(path.resolve(root,baselineId),root);
@@ -75,11 +77,11 @@ server.registerTool("get_case", {
       `${p.violations.length} selected violation(s)`, `Files: ${p.primaryFiles.join(", ")}`,`Tests: ${p.relevantTests.join(", ")}`,
       p.ruleExplanation,p.expectedEndCondition].join("\n"));
   } catch(error) {return reply(`get_case failed: ${String(error)}`,true);}
-});
+}));
 server.registerTool("verify_case", {
   description:"Run every configured test and typecheck, rescan with baseline settings, and write result.json/result.md. Only repository-configured commands execute.",
   inputSchema:z.object({caseId:z.string(),baselineId:z.string(),workspacePath:z.string().optional(),outDir:z.string().optional()}),
-},async ({caseId,baselineId,workspacePath,outDir},extra)=>{
+},async ({caseId,baselineId,workspacePath,outDir},extra)=>lifecycle.run(async()=>{
   try {
     const root=workspace(workspacePath);
     validateWithinWorkspace(path.resolve(root,baselineId),root);
@@ -89,7 +91,8 @@ server.registerTool("verify_case", {
     const {result,resultPath}=await verifyCase({repoRoot:root,caseId,baselineId,outDir:out,signal:extra?.signal,workspaceOnly:true});
     return reply(`${resultPath ? `Result: ${relative(root,resultPath)}` : "Report not saved."}\n${result.status}: ${result.reason}\nTests: ${result.testExitCode}; typechecks: ${result.typecheckExitCode}`,result.status==="invalid");
   } catch(error) {return reply(`verify_case failed: ${String(error)}`,true);}
-});
+}));
+lifecycle.listen();
 server.connect(new StdioServerTransport()).then(()=>console.error("[archpulse] MCP server running on stdio")).catch(error=>{
-  console.error("[archpulse] Fatal error:",error); process.exitCode=1;
+  console.error("[archpulse] Fatal error:",error); process.exitCode=1; void lifecycle.stop();
 });

@@ -41,13 +41,12 @@ export async function withRepositoryLock<T>(root: string, action: () => Promise<
       await delay(50, undefined, { signal });
     }
   }
-  fs.writeFileSync(fd, String(process.pid));
-  try { signal?.throwIfAborted(); return await action(); }
+  try { fs.writeFileSync(fd, String(process.pid)); signal?.throwIfAborted(); return await action(); }
   finally { fs.closeSync(fd); fs.unlinkSync(lock); }
 }
 
 /** Stage all writes, then replace/delete only explicitly owned regular files. */
-export function publishFiles(changes: Map<string, string | null>, beforeCommit?: () => void): void {
+export function publishFiles(changes: Map<string, string | null>, beforeCommit?: (stagedFiles: string[]) => void): void {
   const staged = new Map<string, string>();
   const backups = new Map<string, string>();
   const published: string[] = [];
@@ -65,7 +64,7 @@ export function publishFiles(changes: Map<string, string | null>, beforeCommit?:
         fs.writeFileSync(temporary, content, { encoding: "utf8", flag: "wx" });
       }
     }
-    beforeCommit?.();
+    beforeCommit?.([...staged.values()]);
     for (const file of changes.keys()) {
       if (fs.existsSync(file)) {
         const backup = `${file}.${token}.bak`;

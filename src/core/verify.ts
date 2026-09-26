@@ -16,6 +16,7 @@ export interface VerifyResult extends CompareResult {
 }
 export interface VerifyOptions { repoRoot?: string; baselineId: string; caseId: string; outDir?: string;
   signal?: AbortSignal; commandTimeoutMs?: number; timeoutMs?: number; workspaceOnly?: boolean; }
+class SourceChangedError extends Error {}
 const aggregate = (runs: RunResult[]) => runs.length ? (runs.find(run=>run.exitCode!==0)?.exitCode ?? (runs.some(run=>run.exitCode===null) ? -1 : 0)) : -1;
 
 export async function verifyCase(options: VerifyOptions): Promise<{ result: VerifyResult; resultPath?: string; afterSnapshotPath?: string }> {
@@ -37,6 +38,14 @@ export async function verifyCase(options: VerifyOptions): Promise<{ result: Veri
     const tests: RunResult[] = [], types: RunResult[] = [];
     let expectedTests=0, expectedTypes=0;
     let afterSnapshotPath: string | undefined;
+    let diagnosticSnapshotPath: string | undefined;
+    let checkedState: string | undefined;
+    const reportFiles = ["result.json", "result.md", "execution.json"].map(name => path.join(output, name));
+    const checkState = (staged: string[] = []) => {
+      if (checkedState !== undefined && checkedState !== sourceState(root, [...reportFiles, ...staged])) {
+        throw new SourceChangedError("Source or configuration changed during verification; retry with a stable workspace.");
+      }
+    };
     let result: VerifyResult = { caseId: options.caseId, baselineId: "", afterId: "", resolvedViolations: [],
       persistentViolations: [], newViolations: [], testCommand: "", testExitCode: -1, testOutput: "",
       typecheckExitCode: -1, status: "invalid", reason: "Verification did not run." };
@@ -50,7 +59,7 @@ export async function verifyCase(options: VerifyOptions): Promise<{ result: Veri
       const config=architectureSchema.parse(readJson(path.join(root,"config/architecture.json")));
       if (!config.testCommands.length || !config.typecheckCommands?.length) throw new Error("Full verification requires nonempty testCommands and typecheckCommands.");
       expectedTests=config.testCommands.length;expectedTypes=config.typecheckCommands.length;
-      const state=sourceState(root);
+      checkedState=sourceState(root,reportFiles);
       for (const [kind,commands,runs] of [["testCommands",config.testCommands,tests],["typecheckCommands",config.typecheckCommands,types]] as const) {
         for (let i=0;i<commands.length;i++) {
           checkActive();
@@ -61,10 +70,13 @@ export async function verifyCase(options: VerifyOptions): Promise<{ result: Veri
       checkActive();
       const after=await runScan({ repoRoot:root,configPath:baseline.manifest.configPath,scanScope:baseline.manifest.scope,
         outDir:internalPath(root,"verification-work",randomUUID()),signal:controller.signal,timeoutMs:120_000,workspaceOnly:options.workspaceOnly });
-      afterSnapshotPath=path.resolve(root,after.baselineId);
-      if (state!==sourceState(root)) throw new Error("Source or configuration changed during verification; retry with a stable workspace.");
-      const comparison=compareSnapshots(baseline.snapshotPath,afterSnapshotPath,baseline.packet);
-      const afterSnapshot=caseSnapshotSchema.parse(readJson(afterSnapshotPath));
+      diagnosticSnapshotPath=path.resolve(root,after.baselineId);
+      checkActive();
+      checkState();
+      const comparison=compareSnapshots(baseline.snapshotPath,diagnosticSnapshotPath,baseline.packet);
+      const afterSnapshot=caseSnapshotSchema.parse(readJson(diagnosticSnapshotPath));
+      afterSnapshotPath=diagnosticSnapshotPath;
+      diagnosticSnapshotPath=undefined;
       result={...result,...comparison,persistentViolations:afterSnapshot.violations.filter(v=>before.violations.some(old=>old.id===v.id))};
       if (comparison.status!=="invalid" && (aggregate(tests)!==0 || aggregate(types)!==0)) {
         result.status="failed"; result.reason="Required tests or typechecks failed. " + comparison.reason;
@@ -85,17 +97,29 @@ export async function verifyCase(options: VerifyOptions): Promise<{ result: Veri
     result.testOutput=captured.value();
     const resultPath=path.join(output,"result.json");
     if(options.workspaceOnly)for(const name of ["result.json","result.md","execution.json"])validateWithinWorkspace(path.join(output,name),root);
-    const publish = (beforeCommit?: () => void) => publishFiles(new Map([
+    const discardComparison = () => {
+      diagnosticSnapshotPath=afterSnapshotPath ?? diagnosticSnapshotPath; afterSnapshotPath=undefined;
+      result.afterId=""; result.resolvedViolations=[]; result.persistentViolations=[]; result.newViolations=[];
+    };
+    const publish = (beforeCommit?: (staged: string[]) => void) => publishFiles(new Map([
       [resultPath,json(result)], [path.join(output,"result.md"),`# Verification: ${result.status}\n\n${result.reason}\n\nTests: ${result.testExitCode}\n\nTypecheck: ${result.typecheckExitCode}\n\n\`\`\`text\n${result.testOutput}\n\`\`\`\n`],
-      [path.join(output,"execution.json"),json({ tests, typechecks:types, expectedTests, expectedTypes, afterSnapshotPath })],
+      [path.join(output,"execution.json"),json({ tests, typechecks:types, expectedTests, expectedTypes, afterSnapshotPath, diagnosticSnapshotPath })],
     ]), beforeCommit);
     try {
       await withRepositoryLock(root, () => {
         checkActive();
-        publish(checkActive);
+        try {
+          checkState();
+          publish(staged => { checkActive(); checkState(staged); });
+        } catch (error) {
+          if (!(error instanceof SourceChangedError)) throw error;
+          discardComparison(); result.status="invalid"; result.reason=error.message;
+          publish(checkActive);
+        }
       }, controller.signal);
     } catch (error) {
       if (!controller.signal.aborted) throw error;
+      if (result.status === "invalid") discardComparison();
       result.status = "failed";
       result.reason = "Verification cancelled or overall deadline exceeded; success was not published.";
       try {

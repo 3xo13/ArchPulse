@@ -63,7 +63,7 @@ The `demo/` directory contains a small npm-workspace monorepo (`shared`, `domain
 
 A fresh scan of this branch should report **zero violations**, so it will not generate a repair case for the demo. The committed example artifacts remain a historical, labeled example of a single-case repair, not a scan of the current checkout. Scanner and repair regressions still use temporary repositories containing violations. For a new Bob repair demonstration, prepare an isolated baseline containing the intended violation before scanning; capture a fresh baseline with the current checks. Baselines from the older repair branch may be incompatible with the current verification policy.
 
-The imported repair routes UI persistence through a domain-owned in-memory store. The db package currently retains its separate store; data written through UI/domain is not shared with db, and db's `clearAll()` does not clear domain orders. This inherited repair limitation needs a separate design review.
+UI and db share one domain-owned in-memory store. The db package is a compatibility facade: writes are visible through either API, and `db.clearAll()` clears all demo orders. This is a simplified demo persistence design; it does not introduce UI-to-db or domain-to-db dependencies.
 
 Architecture rules are declared in [`config/architecture.json`](config/architecture.json) and enforced by [`.dependency-cruiser.cjs`](.dependency-cruiser.cjs).
 
@@ -120,7 +120,7 @@ This writes `comparison.json`, not `result.json`, and does not run tests or type
 
 Case IDs remain stable for unchanged groups within a repository. Do not assume the example fixture's case numbering matches a fresh repository. Immutable scan generations keep their own case packets; the latest-scan pointer does not change an earlier baseline. Regenerating a mutable case directory removes obsolete owned packets while preserving unrelated files.
 
-Commands default to a 120-second timeout; verification has a ten-minute execution deadline. Ctrl+C cancels CLI work. CLI exit codes are 0 for success, 1 for failed/partial outcomes, and 2 for invalid input or infrastructure failures. MCP summaries are limited to 2 KiB and link to complete artifacts.
+Commands default to a 120-second timeout; verification has a ten-minute execution deadline. Ctrl+C cancels CLI work, including case generation and comparison publication. MCP disconnects cancel active requests and drain cleanup; shutdown is bounded to ten seconds, with abnormal shutdown reported on stderr. CLI exit codes are 0 for success, 1 for failed/partial outcomes, and 2 for invalid input or infrastructure failures. MCP summaries are limited to 2 KiB and link to complete artifacts.
 
 ### View the example results
 
@@ -136,7 +136,7 @@ The viewer starts in **Example data** mode. To inspect a real run, open **Import
 - **Before snapshot:** the immutable `snapshot.json` identified by the original scan's baseline ID.
 - **Case packet:** `cases/<case-id>.json` alongside that baseline snapshot.
 - **Verification result:** the `result.json` written by `verify` or `verify_case`.
-- **After snapshot:** the snapshot named by `afterSnapshotPath` in the result directory's `execution.json`.
+- **After snapshot:** the snapshot named by `afterSnapshotPath` in the result directory's `execution.json`, present only when a comparison completed. Omit this input when `result.afterId` is empty. A `diagnosticSnapshotPath`, when recorded, is unused diagnostic evidence and must not be imported as the after snapshot.
 - **Execution details (optional):** that `execution.json`, for per-command output and supported test totals.
 
 Files remain in browser memory, are not uploaded, and are cleared on reload. Each file is limited to 20 MiB. Imports validate the public contracts and cross-check case and snapshot evidence before replacing the current view. They display recorded reports; they do not rerun checks or independently authenticate the files. An interrupted/invalid report with an empty `afterId` can be imported without an after snapshot; its after graph is disabled. **Show example** restores the demonstration.
@@ -145,7 +145,9 @@ Checks display their recorded pass/fail/not-run outcomes. Counts are shown only 
 
 Under **Source link settings**, supply a GitHub repository URL and optional before/after revisions. Commit SHA markers are used automatically once a repository is provided. Labels such as `working-tree` and `post-repair` are not treated as revisions. Unknown provenance leaves paths copyable with links disabled; explicitly supplied revisions are not independently verified.
 
-The viewer TypeScript project is now a mandatory repository verification check, alongside the application and four demo packages. **Capture a fresh baseline after updating:** earlier baselines use a different verification policy and must be rescanned.
+The viewer TypeScript project is a mandatory verification check, alongside the application and four demo packages. The architecture descriptions now reflect shared demo persistence. **Capture a fresh baseline after updating:** earlier baselines use a different verification policy and must be rescanned.
+
+Scans honor the TypeScript configuration selected by dependency-cruiser and fingerprint its effective inherited settings. With bundled dependency-cruiser 16, a nested TypeScript config should use an absolute `options.tsConfig.fileName` (for example, `require('node:path').resolve(__dirname, 'analysis/tsconfig.json')` in a CJS config); its loader can incorrectly duplicate directories for nested relative paths. Root-level relative config filenames work normally. Inputs must remain stable throughout scanning and report publication; edits during these stages invalidate the evidence and require a retry.
 
 Cancellation and the verification deadline remain active while waiting to publish reports. If the publication lock is occupied after cancellation, verification returns failure with **Report not saved** and preserves existing artifacts; it never points to a stale report as new evidence.
 
@@ -193,7 +195,7 @@ archpulse/
 ├── demo/packages/             # repaired npm workspace demo repo
 │   ├── shared/                # Value objects — no layer deps
 │   ├── domain/                # Business logic → shared only
-│   ├── db/                    # Data access → shared + domain types
+│   ├── db/                    # Compatibility facade over domain's demo store
 │   └── ui/                    # Presentation → domain + shared only
 ├── config/architecture.json   # Layer definitions and allowed dependency directions
 ├── .dependency-cruiser.cjs    # Scanner rules

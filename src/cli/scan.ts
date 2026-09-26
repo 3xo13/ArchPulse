@@ -8,7 +8,7 @@ import { normalizeSnapshot } from "../core/snapshot.js";
 import { architectureSchema, cruiseResultSchema } from "../core/validation.js";
 import { randomUUID } from "node:crypto";
 import { assertMutableOutput, digest, internalPath, json, publishFiles, withRepositoryLock } from "../core/storage.js";
-import { configurationFingerprint, policyHash, type Manifest } from "../core/provenance.js";
+import { configurationFingerprint, policyHash, sourceState, type Manifest } from "../core/provenance.js";
 import { runProcess } from "../core/process.js";
 import { validateWithinWorkspace } from "../core/workspace.js";
 
@@ -62,6 +62,14 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanSummary> {
     }
     const outDir = path.resolve(repoRoot, slash(options.outDir ?? ".archpulse/latest"));
     assertMutableOutput(repoRoot,outDir);
+    const outputs = ["snapshot.json", "graph.html", "manifest.json"].map(name => path.join(outDir, name));
+    const state = sourceState(repoRoot, outputs);
+    const checkCapture = (staged: string[] = []) => {
+      options.signal?.throwIfAborted();
+      if (state !== sourceState(repoRoot, [...outputs, ...staged])) {
+        throw new Error("Source or configuration changed during scan; retry with a stable workspace.");
+      }
+    };
     const pkg = JSON.parse(readFileSync(path.join(scannerRoot, "package.json"), "utf8")) as { version: string };
     const raw = await runDepcruise(repoRoot, configPath, scope, options);
     const configHash = configurationFingerprint(raw, repoRoot, relativeScope, pkg.version);
@@ -84,7 +92,8 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanSummary> {
     }
     changes.set(internalPath(repoRoot, "latest-baseline.json"), json({ baselineId }));
     if(options.workspaceOnly)for(const target of changes.keys())validateWithinWorkspace(target,repoRoot);
-    publishFiles(changes);
+    checkCapture();
+    publishFiles(changes, checkCapture);
     return {
       baselineId,
       snapshotPath: slash(path.relative(repoRoot, path.join(outDir, "snapshot.json"))),
@@ -104,8 +113,6 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanSummary> {
 async function runDepcruise(repoRoot: string, configPath: string, scope: string, options: ScanOptions): Promise<ICruiseResult> {
   const args = [path.join(scannerRoot, "bin", "dependency-cruise.mjs"),
     "--config", configPath, "--output-type", "json"];
-  const tsconfig = path.join(repoRoot, "tsconfig.json");
-  if (existsSync(tsconfig)) args.push("--ts-config", tsconfig);
   args.push("--", scope);
   const result = await runProcess(process.execPath, args, {
     cwd: repoRoot, signal: options.signal, timeoutMs: options.timeoutMs, maxBytes: 20 * 1024 * 1024, maxLines: Infinity,

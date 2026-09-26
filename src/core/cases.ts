@@ -98,7 +98,7 @@ export async function generateCases(options: CaseOptions): Promise<CasesResult> 
     changes.set(registryPath,json(registry));
     for (const target of changes.keys()) validateWithinWorkspace(target, target === registryPath ? root : out);
     options.signal?.throwIfAborted();
-    publishFiles(changes);
+    publishFiles(changes, () => options.signal?.throwIfAborted());
     return { caseCount: entries.length, outDir: out, oversizedCases, cases: entries };
   }, options.signal);
 }
@@ -134,10 +134,10 @@ export async function getCase(root: string, caseId: string, identifier?: string,
 }
 
 /** Legacy fixtures can be compared, but cannot authorize a full verification. */
-export async function getComparisonCase(root: string, before: string, caseId: string) {
+export async function getComparisonCase(root: string, before: string, caseId: string, signal?: AbortSignal) {
   if (!/^case-\d{3,}$/.test(caseId)) throw new Error("Invalid case ID.");
   const source=path.resolve(root,before);
-  if (fs.existsSync(path.join(path.dirname(source),"manifest.json"))) return (await getCase(root,caseId,source)).packet;
+  if (fs.existsSync(path.join(path.dirname(source),"manifest.json"))) return (await getCase(root,caseId,source,signal)).packet;
   const file=[path.join(path.dirname(source),"cases",`${caseId}.json`),path.join(path.dirname(source),`${caseId}.json`)].find(candidate=>fs.existsSync(candidate));
   if (!file) throw new Error("Case packet not found beside the baseline. Generate cases first.");
   const packet=z.object({caseId:z.literal(caseId),scanId:z.string(),violations:z.array(z.object({id:z.string()})).min(1)}).parse(readJson(file));
