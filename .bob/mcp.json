@@ -3,7 +3,11 @@
     "archpulse": {
       "type": "stdio",
       "command": "node",
-      "args": ["--import", "tsx/esm", "src/mcp/server.ts"],
+      "args": [
+        "--import",
+        "tsx/esm",
+        "src/mcp/server.ts"
+      ],
       "env": {
         "ARCHPULSE_ROOT": "${workspaceFolder}"
       }

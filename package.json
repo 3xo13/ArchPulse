@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "build": "tsc --project tsconfig.json",
+    "install": "node scripts/install-bob-addon.js",
     "lint": "eslint src",
     "test": "vitest run",
     "scan": "tsx src/cli/index.ts scan",
@@ -18,13 +19,17 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "dependency-cruiser": "^16.0.0"
+    "@viz-js/viz": "^3.30.0",
+    "dependency-cruiser": "^16.0.0",
+    "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9.0.0",
     "@types/node": "^22.0.0",
     "eslint": "^9.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.5.0",
+    "typescript-eslint": "^8.0.0",
     "vitest": "^2.0.0"
   },
   "engines": {
