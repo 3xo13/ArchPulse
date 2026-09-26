@@ -84,26 +84,22 @@ describe("normalizeSnapshot — incompleteResolutionCount via fixture", () => {
   });
 });
 
-describe("runScan — integration (real demo repo circular dependency)", () => {
+describe("runScan — integration (repaired demo repository)", () => {
   const nodeMajor = parseInt(process.versions.node.split(".")[0]!, 10);
   const runIt = nodeMajor >= 20 ? it : it.skip;
 
   runIt(
-    "scan of demo/packages produces a circular-dependency violation with cyclePath populated",
+    "scan of the repaired demo produces complete coverage without violations",
     { timeout: 60_000 },
     async () => {
-        const summary = await runScan({
+      const summary = await runScan({
         repoRoot: ARCHPULSE_ROOT,
         scanScope: "demo/packages",
         outDir: ".archpulse/test-run",
       });
-      // We expect at least one violation; the shared-no-domain violation exists
-      expect(summary.violationCount).toBeGreaterThan(0);
-      // At minimum the violations should have ids
-      for (const v of summary.violations) {
-        expect(typeof v.id).toBe("string");
-        expect(v.id.length).toBeGreaterThan(0);
-      }
+      expect(summary.violationCount).toBe(0);
+      expect(summary.violations).toEqual([]);
+      expect(summary.incompleteResolutionCount).toBe(0);
     }
   );
 });

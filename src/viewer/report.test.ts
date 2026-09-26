@@ -76,7 +76,11 @@ describe("artifact validation", () => {
   });
 });
 describe("check summaries", () => {
-  const result = validateReport(input()).result;
+  const result = { ...validateReport(input()).result,
+    testCommand: "npx vitest run", testOutput: "Test Files 3 passed (3)\nTests 14 passed (14)" };
+  it("shows outcome only for the merged example without recorded test totals", () => {
+    expect(testSummary(validateReport(input()).result)).toBe("Passed");
+  });
   it("shows 14 tests instead of three test files", () => expect(testSummary(result)).toBe("Passed · 14 passed"));
   it("strips ANSI formatting and handles failures and skipped tests", () => {
     expect(vitestCounts("\u001b[32m Tests  1 failed | 3 passed | 2 skipped (6)\u001b[0m")).toEqual({ failed: 1, passed: 3, skipped: 2 });

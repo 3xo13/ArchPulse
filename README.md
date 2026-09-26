@@ -54,12 +54,16 @@ After running, **reload Bob IDE** (or restart the window). Confirm the three Arc
 
 ## Demo repository
 
-The `demo/` directory contains a small npm-workspace monorepo (`shared`, `domain`, `db`, `ui`) with two seeded architectural violations:
+The `demo/` directory contains a small npm-workspace monorepo (`shared`, `domain`, `db`, `ui`) whose two original seeded architectural violations have now been repaired on this branch:
 
 | Violation | Rule | Description |
 |---|---|---|
 | `shared` → `domain` | `shared-no-domain` | A foundational package must not depend on a higher-level layer |
 | `ui` → `db` | `ui-no-db` | The UI layer must not import the data-access layer directly |
+
+A fresh scan of this branch should report **zero violations**, so it will not generate a repair case for the demo. The committed example artifacts remain a historical, labeled example of a single-case repair, not a scan of the current checkout. Scanner and repair regressions still use temporary repositories containing violations. For a new Bob repair demonstration, prepare an isolated baseline containing the intended violation before scanning; capture a fresh baseline with the current checks. Baselines from the older repair branch may be incompatible with the current verification policy.
+
+The imported repair routes UI persistence through a domain-owned in-memory store. The db package currently retains its separate store; data written through UI/domain is not shared with db, and db's `clearAll()` does not clear domain orders. This inherited repair limitation needs a separate design review.
 
 Architecture rules are declared in [`config/architecture.json`](config/architecture.json) and enforced by [`.dependency-cruiser.cjs`](.dependency-cruiser.cjs).
 
@@ -186,11 +190,11 @@ archpulse/
 │   ├── core/snapshot.ts       # Path normalization, config hash, violation IDs
 │   ├── cli/                   # Scan, cases, compare, and verify commands
 │   └── core/                  # Comparison, runner, validation, artifact utilities
-├── demo/packages/             # npm workspace demo repo with seeded violations
+├── demo/packages/             # repaired npm workspace demo repo
 │   ├── shared/                # Value objects — no layer deps
 │   ├── domain/                # Business logic → shared only
 │   ├── db/                    # Data access → shared + domain types
-│   └── ui/                    # Presentation → domain + shared only (violation: imports db)
+│   └── ui/                    # Presentation → domain + shared only
 ├── config/architecture.json   # Layer definitions and allowed dependency directions
 ├── .dependency-cruiser.cjs    # Scanner rules
 ├── artifacts/example/         # Committed before/after fixtures for the viewer

@@ -30,7 +30,23 @@ export function fulfillOrder(order: Order): Order {
   return { ...order, status: "fulfilled" };
 }
 
-/** Used by shared/src/index.ts — this re-export is what creates the cycle. */
 export function formatOrder(order: Order): string {
   return `Order ${order.id} (${order.status}) — ${order.total.amount} ${order.total.currency}`;
+}
+
+// ---------------------------------------------------------------------------
+// In-memory order store — owned by the domain layer so that the ui layer
+// can persist and query orders without a forbidden ui → db dependency.
+// ---------------------------------------------------------------------------
+
+const _store = new Map<string, Order>();
+
+export function saveOrder(order: Order): void {
+  _store.set(order.id, order);
+}
+
+export function findOrdersByUser(userId: UserId): Order[] {
+  return [..._store.values()].filter(
+    (o) => o.userId.value === userId.value,
+  );
 }

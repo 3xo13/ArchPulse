@@ -27,7 +27,8 @@ function file(data: unknown) {
 it("imports a real-shaped run, preserves it on invalid import and returns to examples", async () => {
   const user = userEvent.setup(); render(<App />);
   expect(screen.getByText("Example data")).toBeTruthy();
-  expect(screen.getByText("Passed · 14 passed")).toBeTruthy();
+  expect(screen.getAllByText("Passed").length).toBeGreaterThan(0);
+  expect(screen.queryByText(/14 passed/)).toBeNull();
   await user.click(screen.getByText("Import verification results"));
   for (const [label, data] of [["Before snapshot", before], ["After snapshot", after], ["Case packet", { ...packet, title: "Imported case" }], ["Verification result", result]] as const) {
     await user.upload(screen.getByLabelText(label), file(data));
