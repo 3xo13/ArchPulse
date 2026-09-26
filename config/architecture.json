@@ -23,11 +23,31 @@
     }
   ],
   "allowedDependencies": [
-    { "from": "db",     "to": "shared",  "reason": "db may use shared types" },
-    { "from": "db",     "to": "domain",  "reason": "db may reference domain types for storage" },
-    { "from": "domain", "to": "shared",  "reason": "domain may use shared value objects" },
-    { "from": "ui",     "to": "domain",  "reason": "ui orchestrates domain operations" },
-    { "from": "ui",     "to": "shared",  "reason": "ui may use shared types directly" }
+    {
+      "from": "db",
+      "to": "shared",
+      "reason": "db may use shared types"
+    },
+    {
+      "from": "db",
+      "to": "domain",
+      "reason": "db may reference domain types for storage"
+    },
+    {
+      "from": "domain",
+      "to": "shared",
+      "reason": "domain may use shared value objects"
+    },
+    {
+      "from": "ui",
+      "to": "domain",
+      "reason": "ui orchestrates domain operations"
+    },
+    {
+      "from": "ui",
+      "to": "shared",
+      "reason": "ui may use shared types directly"
+    }
   ],
   "forbiddenDependencies": [
     {
@@ -59,8 +79,20 @@
   "testCommands": [
     "npx vitest run demo/packages/domain/src",
     "npx vitest run demo/packages/db/src",
-    "npx vitest run demo/packages/ui/src"
+    "npx vitest run demo/packages/ui/src",
+    "npx vitest run demo/packages/shared/src"
   ],
   "scanScope": "demo/packages",
-  "scanExcludes": ["**/node_modules/**", "**/dist/**", "**/*.test.ts"]
+  "scanExcludes": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/*.test.ts"
+  ],
+  "typecheckCommands": [
+    "npx tsc --noEmit --project tsconfig.json",
+    "npx tsc --noEmit --project demo/packages/shared/tsconfig.json",
+    "npx tsc --noEmit --project demo/packages/domain/tsconfig.json",
+    "npx tsc --noEmit --project demo/packages/db/tsconfig.json",
+    "npx tsc --noEmit --project demo/packages/ui/tsconfig.json"
+  ]
 }

@@ -49,7 +49,7 @@ it.each(["console.log('line\\n'.repeat(10000));", "process.stdout.write('x'.repe
   expect(result.output.split("\n").length).toBeLessThanOrEqual(500);
   expect(result.output).toContain("output truncated");
 });
-it.each([0, 1, 2])("runs actual configured npx command %s", { timeout: 30000 }, async index => {
+it.each([0, 1, 2, 3])("runs actual configured npx command %s", { timeout: 30000 }, async index => {
   const result = await runTestCommand(index, process.cwd());
   expect(result.exitCode, result.output).toBe(0);
   expect(result.output).toContain("passed");

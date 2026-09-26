@@ -177,14 +177,10 @@ function buildRuleExplanation(
 }
 
 /**
- * Infers the nearest test files for the given primary source files.
- *
- * Strategy (no filesystem access):
- *   1. Sibling pattern: replace ".ts" with ".test.ts" for each primary file.
- *   2. Also check snapshot modules for any .test.ts / .spec.ts file whose
- *      path shares the same directory prefix as a primary file.
- *
- * Returns a deduplicated, sorted list.
+ * Selects existing tests from the supplied module inventory.
+ * The orchestration service supplies a filesystem inventory including tests.
+ * Rank sibling tests first, then tests in the same directory and package.
+ * No filenames are fabricated here.
  */
 function inferRelevantTests(
   primaryFiles: string[],
@@ -192,26 +188,23 @@ function inferRelevantTests(
 ): string[] {
   const candidates = new Set<string>();
 
-  // Sibling pattern
-  for (const f of primaryFiles) {
-    if (f.endsWith(".ts") && !f.endsWith(".test.ts") && !f.endsWith(".spec.ts")) {
-      candidates.add(f.replace(/\.ts$/, ".test.ts"));
+  const available = (modules ?? []).map(module => module.path).filter(file => /\.(test|spec)\.[cm]?[jt]sx?$/.test(file));
+  const ranked = new Map<string, number>();
+  for (const test of available) {
+    let rank = Infinity;
+    for (const file of primaryFiles) {
+      const stem = file.replace(/\.[^.]+$/, "");
+      const directory = file.split("/").slice(0,-1).join("/");
+      const module = modules?.find(module => module.path === file);
+      const testModule = modules?.find(module => module.path === test);
+      if (test.replace(/\.(test|spec)\.[^.]+$/, "") === stem) rank = Math.min(rank, 0);
+      else if (test.split("/").slice(0,-1).join("/") === directory) rank = Math.min(rank, 1);
+      else if (module?.package && testModule?.package === module.package) rank = Math.min(rank, 2);
     }
+    if (Number.isFinite(rank)) ranked.set(test, rank);
   }
-
-  // Module-list pattern (snapshot may not include test files — scanner config
-  // excludes them — but include this path for future-proofing)
-  const primaryDirs = new Set(primaryFiles.map((f) => f.split("/").slice(0, -1).join("/")));
-  for (const mod of modules ?? []) {
-    if (mod.path.endsWith(".test.ts") || mod.path.endsWith(".spec.ts")) {
-      const dir = mod.path.split("/").slice(0, -1).join("/");
-      if (primaryDirs.has(dir)) {
-        candidates.add(mod.path);
-      }
-    }
-  }
-
-  return Array.from(candidates).sort();
+  for (const [file] of [...ranked].sort(([a,ar],[b,br]) => ar-br || a.localeCompare(b))) candidates.add(file);
+  return Array.from(candidates);
 }
 
 // ---------------------------------------------------------------------------
@@ -324,8 +317,8 @@ export function buildCasePacket(
   );
   const relevantTests = inferRelevantTests(group.primaryFiles, snapshot.modules);
   const expectedEndCondition =
-    `The violation '${rule}' is absent from a same-config re-scan. ` +
-    `All tests in the test commands still pass.`;
+    `Every selected violation (${[...new Set(group.violations.map(v => v.rule))].join(', ')}) is resolved in a same-config re-scan, with no new violations. ` +
+    `All configured tests and typechecks must pass.`;
 
   const json: CasePacket = {
     caseId,

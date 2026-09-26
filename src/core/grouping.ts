@@ -93,91 +93,40 @@ function union(uf: number[], a: number, b: number): void {
  * Same-rule violations can represent entirely unrelated architectural problems
  * and must remain in separate cases unless they also satisfy criteria 1 or 2.
  */
+function filesOf(v: SnapshotViolation): string[] {
+  return [...new Set([v.from, v.to, ...(v.cyclePath ?? [])])].sort();
+}
 function shouldMerge(a: SnapshotViolation, b: SnapshotViolation): boolean {
-  // Criterion 1: shared cycle path member
-  if (a.cyclePath !== null && b.cyclePath !== null) {
-    const aSet = new Set(a.cyclePath);
-    for (const node of b.cyclePath) {
-      if (aSet.has(node)) return true;
-    }
-  }
-
-  // Criterion 2: shared offending file (from or to)
-  const aFiles = new Set([a.from, a.to]);
-  if (aFiles.has(b.from) || aFiles.has(b.to)) return true;
-
-  return false;
+  const files = new Set(filesOf(a));
+  return filesOf(b).some(file => files.has(file));
 }
-
-// ---------------------------------------------------------------------------
-// Primary-file collection
-// ---------------------------------------------------------------------------
-
 function collectFiles(violations: SnapshotViolation[]): string[] {
-  const seen = new Set<string>();
-  for (const v of violations) {
-    seen.add(v.from);
-    seen.add(v.to);
-  }
-  return Array.from(seen).sort();
+  return [...new Set(violations.flatMap(filesOf))].sort();
 }
-
-// ---------------------------------------------------------------------------
-// Split oversized components
-// ---------------------------------------------------------------------------
-
-/**
- * Splits a component whose primary-file count exceeds MAX_PRIMARY_FILES into
- * smaller sub-groups.  The split is deterministic: violations are ordered by
- * their id, then greedily placed into the current sub-group until the file cap
- * would be exceeded, at which point a new sub-group starts.
- *
- * Each sub-group receives the groupKey of every sibling sub-group in its
- * relatedGroups field so consumers can follow the cross-links.
- */
 function splitComponent(violations: SnapshotViolation[]): ViolationGroup[] {
-  const sorted = [...violations].sort((a, b) => a.id.localeCompare(b.id));
-  const subGroups: SnapshotViolation[][] = [];
+  const sorted = [...violations].sort((a,b) => a.id.localeCompare(b.id));
+  const groups: ViolationGroup[] = [];
   let current: SnapshotViolation[] = [];
-  let currentFiles = new Set<string>();
-
-  for (const v of sorted) {
-    const incoming = [v.from, v.to].filter((f) => !currentFiles.has(f));
-    const wouldExceed = currentFiles.size + incoming.length > MAX_PRIMARY_FILES;
-
-    if (current.length > 0 && wouldExceed) {
-      subGroups.push(current);
-      current = [];
-      currentFiles = new Set<string>();
-    }
-    current.push(v);
-    currentFiles.add(v.from);
-    currentFiles.add(v.to);
-  }
-  if (current.length > 0) subGroups.push(current);
-
-  // Build ViolationGroup objects
-  const groups: ViolationGroup[] = subGroups.map((viols) => {
-    const first = viols[0];
-    if (first === undefined) throw new Error("subGroup cannot be empty");
-    return {
-      groupKey: first.id,
-      violations: viols,
-      primaryFiles: collectFiles(viols),
-    };
-  });
-
-  // Wire cross-links between sibling sub-groups
-  if (groups.length > 1) {
-    for (let i = 0; i < groups.length; i++) {
-      const g = groups[i];
-      if (g === undefined) continue;
-      g.relatedGroups = groups
-        .filter((_, j) => j !== i)
-        .map((sg) => sg.groupKey);
+  const flush = () => {
+    if (!current.length) return;
+    groups.push({ groupKey: current[0]!.id, violations: current, primaryFiles: collectFiles(current) });
+    current = [];
+  };
+  for (const violation of sorted) {
+    const files = filesOf(violation);
+    if (files.length > MAX_PRIMARY_FILES) {
+      flush();
+      for (let i = 0; i < files.length; i += MAX_PRIMARY_FILES) {
+        groups.push({ groupKey: `${violation.id}::part-${i / MAX_PRIMARY_FILES + 1}`,
+          violations: [violation], primaryFiles: files.slice(i, i + MAX_PRIMARY_FILES) });
+      }
+    } else {
+      if (collectFiles([...current, violation]).length > MAX_PRIMARY_FILES) flush();
+      current.push(violation);
     }
   }
-
+  flush();
+  if (groups.length > 1) for (const group of groups) group.relatedGroups = groups.filter(other => other !== group).map(other => other.groupKey);
   return groups;
 }
 

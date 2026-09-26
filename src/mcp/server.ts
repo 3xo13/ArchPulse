@@ -1,215 +1,105 @@
 #!/usr/bin/env node
-/**
- * ArchPulse — STDIO MCP server (Owner B)
- *
- * Registers three tools:
- *   scan_repository  — runs dependency-cruiser, saves artifacts, returns compact summary
- *   get_case         — stub (implemented by Owner C)
- *   verify_case      — stub (implemented by Owner E)
- *
- * Transport: STDIO (spawned by Bob IDE via .bob/mcp.json)
- *
- * IMPORTANT: All logging uses console.error — stdout is the MCP protocol channel.
- */
-
 import * as fs from "node:fs";
-import * as nodePath from "node:path";
+import * as path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod/v4";
 import { runScan } from "../cli/scan.js";
+import { ensureBaselineCases, getCase } from "../core/cases.js";
+import { verifyCase } from "../core/verify.js";
 import { trustedWorkspaceRoot, validateWithinWorkspace } from "../core/workspace.js";
+import { internalPath } from "../core/storage.js";
 export { validateWithinWorkspace } from "../core/workspace.js";
 
-
-// ─── Server setup ─────────────────────────────────────────────────────────────
-
-const server = new McpServer({
-  name: "archpulse",
-  version: "0.1.0",
-});
-
-// ─── Tool: scan_repository ────────────────────────────────────────────────────
-
-server.registerTool(
-  "scan_repository",
-  {
-    description:
-      "Run dependency-cruiser on the repository, save a full snapshot.json and graph.html to " +
-      "disk, and return a compact violation summary. Use the returned snapshotPath as baselineId " +
-      "for verify_case. Only paths within the configured workspace root are accepted.",
-    inputSchema: z.object({
-      workspacePath: z
-        .string()
-        .optional()
-        .describe(
-          "Path to the repository root, relative to ARCHPULSE_ROOT if not absolute. Defaults to the trusted root. " +
-            "Must be within the trusted workspace; paths outside are rejected."
-        ),
-      outDir: z
-        .string()
-        .optional()
-        .describe(
-          "Directory (relative to workspacePath) where artifacts are written. " +
-            "Defaults to .archpulse/latest"
-        ),
-    }),
-  },
-  async ({ workspacePath, outDir }) => {
-    console.error(`[archpulse] scan_repository called — workspacePath: ${workspacePath ?? "(default)"}`);
-
-    try {
-      const ARCHPULSE_ROOT = trustedWorkspaceRoot();
-      // Resolve workspacePath against the trusted root.
-      const repoRoot = workspacePath
-        ? nodePath.resolve(ARCHPULSE_ROOT, workspacePath)
-        : ARCHPULSE_ROOT;
-      validateWithinWorkspace(repoRoot, ARCHPULSE_ROOT);
-      if (!fs.statSync(repoRoot).isDirectory()) throw new Error("workspacePath must be a directory.");
-
-      // Resolve and validate outDir
-      const resolvedOutDir = outDir
-        ? nodePath.resolve(repoRoot, outDir)
-        : nodePath.join(repoRoot, ".archpulse", "latest");
-      validateWithinWorkspace(resolvedOutDir, repoRoot);
-
-      // Validate artifact paths before writing
-      const snapshotPath = nodePath.join(resolvedOutDir, "snapshot.json");
-      const graphPath = nodePath.join(resolvedOutDir, "graph.html");
-      validateWithinWorkspace(snapshotPath, repoRoot);
-      validateWithinWorkspace(graphPath, repoRoot);
-
-      console.error(`[archpulse] scan_repository — root: ${repoRoot}, outDir: ${resolvedOutDir}`);
-
-      const summary = await runScan({
-        repoRoot,
-        outDir: resolvedOutDir,
-      });
-
-      const lines: string[] = [
-        `Scan ${summary.incompleteResolutionCount ? "incomplete" : "complete"} — ${summary.violationCount} violation(s) found (${summary.errorCount} error, ${summary.warnCount} warn).`,
-        `Git marker: ${summary.gitMarker}`,
-        `Config hash: ${summary.configHash.slice(0, 12)}...`,
-        `Snapshot saved to: ${summary.snapshotPath}`,
-        `Dependency graph saved to: ${summary.graphPath}`,
-        "",
-      ];
-
-      lines.push(`Unresolved dependency edges: ${summary.incompleteResolutionCount}`);
-      for (const warning of summary.scannerWarnings.slice(0, 10)) lines.push(`Warning: ${warning}`);
-      if (summary.scannerWarnings.length > 10) lines.push("Additional warnings are saved in snapshot.json.");
-
-      if (summary.violations.length === 0) {
-        lines.push(summary.incompleteResolutionCount ? "No violations detected among resolved dependencies; coverage is incomplete." : "No rule violations detected.");
-      } else {
-        lines.push(`Violations:`);
-        const MAX_VIOLATIONS = 10;
-        const shown = summary.violations.slice(0, MAX_VIOLATIONS);
-        const remaining = summary.violations.length - shown.length;
-        for (const v of shown) {
-          lines.push(`  [${v.severity.toUpperCase()}] ${v.rule}`);
-          lines.push(`    from: ${v.from}`);
-          lines.push(`    to:   ${v.to}`);
-          lines.push(`    id:   ${v.id}`);
-        }
-        if (remaining > 0) {
-          lines.push(`  … and ${remaining} more violation(s) not shown.`);
-        }
-      }
-
-      return {
-        content: [{ type: "text" as const, text: lines.join("\n") }],
-      };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[archpulse] scan_repository error: ${msg}`);
-      return {
-        content: [{ type: "text" as const, text: `scan_repository failed: ${msg}` }],
-        isError: true,
-      };
-    }
-  }
-);
-
-// ─── Tool: get_case ───────────────────────────────────────────────────────────
-
-server.registerTool(
-  "get_case",
-  {
-    description:
-      "Return a bounded case packet (title, rule, violations, primary files, relevant tests, " +
-      "test commands, and expected end condition) for a given case ID. " +
-      "Implemented by Owner C — returns a stub until that workstream is merged.",
-    inputSchema: z.object({
-      caseId: z.string().describe("Case ID, e.g. 'case-001'"),
-    }),
-  },
-  async ({ caseId }) => {
-    console.error(`[archpulse] get_case called — caseId: ${caseId}`);
-    // Stub: Owner C wires the real handler in src/core/grouping.ts + src/core/casePacket.ts
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text:
-            `get_case for '${caseId}' is not yet implemented.\n` +
-            "Owner C (grouping) will wire this tool. " +
-            "Case generation is pending integration.",
-        },
-      ],
-      isError: true,
-    };
-  }
-);
-
-// ─── Tool: verify_case ────────────────────────────────────────────────────────
-
-server.registerTool(
-  "verify_case",
-  {
-    description:
-      "Run configured test commands and a same-config re-scan, then compare the new snapshot " +
-      "against the baseline to determine resolved, persistent, and new violations. " +
-      "Implemented by Owner E — returns a stub until that workstream is merged. " +
-      "SECURITY: test commands come only from config/architecture.json testCommands; " +
-      "arbitrary shell strings from the model are never accepted.",
-    inputSchema: z.object({
-      caseId: z.string().describe("Case ID, e.g. 'case-001'"),
-      baselineId: z
-        .string()
-        .describe(
-          "The gitMarker or snapshotPath of the before-scan to compare against. " +
-            "Use the snapshotPath returned by scan_repository."
-        ),
-    }),
-  },
-  async ({ caseId, baselineId }) => {
-    console.error(`[archpulse] verify_case called — caseId: ${caseId}, baselineId: ${baselineId}`);
-    // Stub: Owner E wires the real handler in src/core/compare.ts + src/core/runner.ts
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text:
-            `verify_case for '${caseId}' (baseline: '${baselineId}') is not yet implemented.\n` +
-            "Owner E (verifier) will wire this tool. " +
-            "Verification orchestration and the compare CLI are pending integration.",
-        },
-      ],
-      isError: true,
-    };
-  }
-);
-
-// ─── Entry ────────────────────────────────────────────────────────────────────
-
-async function main(): Promise<void> {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("[archpulse] MCP server running on stdio");
+const server = new McpServer({ name: "archpulse", version: "0.1.0" });
+function workspace(candidate?: string): string {
+  const trusted = trustedWorkspaceRoot();
+  const root=path.resolve(trusted,candidate ?? ".");
+  validateWithinWorkspace(root,trusted);
+  if (!fs.statSync(root).isDirectory()) throw new Error("workspacePath must be a directory.");
+  return fs.realpathSync(root);
 }
-
-main().catch((err: unknown) => {
-  console.error("[archpulse] Fatal error:", err);
-  process.exit(1);
+function output(root: string, directory: string | undefined, names: string[]): string {
+  const out=path.resolve(root,directory ?? ".archpulse/latest");
+  validateWithinWorkspace(out,root);
+  for (const name of names) validateWithinWorkspace(path.join(out,name),root);
+  return out;
+}
+/** Text is UTF-8 bounded; complete machine-readable data always remains on disk. */
+function reply(text: string, isError = false) {
+  const notice="\n[truncated; see the complete artifacts at the paths above]";
+  if (Buffer.byteLength(text)>2048) {
+    let bounded="";
+    for (const char of text) { if (Buffer.byteLength(bounded+char+notice)>2048) break; bounded+=char; }
+    text=bounded+notice;
+  }
+  return { content:[{type:"text" as const,text}], ...(isError ? {isError:true} : {}) };
+}
+const relative=(root:string,file:string)=>path.relative(root,file).replace(/\\/g,"/");
+server.registerTool("scan_repository", {
+  description:"Scan the repository and return an immutable baseline ID, artifact paths, and a bounded case index. Unresolved dependencies make coverage incomplete.",
+  inputSchema:z.object({ workspacePath:z.string().optional(),outDir:z.string().optional() }),
+},async ({workspacePath,outDir},extra)=>{
+  try {
+    const root=workspace(workspacePath);
+    const out=output(root,outDir,["snapshot.json","graph.html","manifest.json"]);
+    const scan=await runScan({repoRoot:root,outDir:out,signal:extra?.signal,workspaceOnly:true});
+    const lines=[`Baseline: ${scan.baselineId}`,`Snapshot: ${scan.snapshotPath}`,`Graph: ${scan.graphPath}`,
+      `Scan ${scan.incompleteResolutionCount ? "incomplete" : "complete"}: ${scan.violationCount} violation(s).`,
+      `Unresolved dependency edges: ${scan.incompleteResolutionCount}`];
+    if (fs.existsSync(path.join(root,"config/architecture.json"))) {
+      try {
+        const cases=await ensureBaselineCases(root,scan.baselineId,extra?.signal);
+        lines.push(`Case index: ${relative(root,path.join(cases.caseDirectory,"index.json"))}`,`${cases.cases.length} case(s)`);
+        for (const item of cases.cases.slice(0,10)) lines.push(`${item.caseId}: ${item.title ?? ""}`);
+      } catch(error) {lines.push(`Case generation unavailable: ${String(error)}`);}
+    } else lines.push("Case generation requires config/architecture.json.");
+    for (const warning of scan.scannerWarnings.slice(0,10)) lines.push(`Warning: ${warning}`);
+    if (!scan.violationCount) lines.push(scan.incompleteResolutionCount ? "No violations detected among resolved dependencies; coverage is incomplete." : "No rule violations detected.");
+    for (const v of scan.violations.slice(0,10)) lines.push(`[${v.severity}] ${v.rule}: ${v.from} -> ${v.to}`);
+    if (scan.violations.length>10) lines.push(`${scan.violations.length-10} more violation(s) in the snapshot.`);
+    return reply(lines.join("\n"));
+  } catch(error) { return reply(`scan_repository failed: ${String(error)}`,true); }
+});
+server.registerTool("get_case", {
+  description:"Get a case from a captured baseline. Defaults to the latest successful baseline for this repository; full JSON and Markdown remain on disk.",
+  inputSchema:z.object({caseId:z.string(),workspacePath:z.string().optional(),baselineId:z.string().optional()}),
+},async ({caseId,workspacePath,baselineId},extra)=>{
+  try {
+    const root=workspace(workspacePath);
+    if(baselineId)validateWithinWorkspace(path.resolve(root,baselineId),root);
+    const selected=await getCase(root,caseId,baselineId,extra?.signal);
+    const p=selected.packet;
+    return reply([`Baseline: ${selected.baselineId}`,`Packet: ${relative(root,selected.packetPath)}`,
+      `Markdown: ${relative(root,selected.packetPath.replace(/\.json$/,".md"))}`,`${p.caseId}: ${p.title}`,
+      `${p.violations.length} selected violation(s)`, `Files: ${p.primaryFiles.join(", ")}`,`Tests: ${p.relevantTests.join(", ")}`,
+      p.ruleExplanation,p.expectedEndCondition].join("\n"));
+  } catch(error) {return reply(`get_case failed: ${String(error)}`,true);}
+});
+server.registerTool("verify_case", {
+  description:"Run every configured test and typecheck, rescan with baseline settings, and write result.json/result.md. Only repository-configured commands execute.",
+  inputSchema:z.object({caseId:z.string(),baselineId:z.string(),workspacePath:z.string().optional(),outDir:z.string().optional()}),
+},async ({caseId,baselineId,workspacePath,outDir},extra)=>{
+  try {
+    const root=workspace(workspacePath);
+    validateWithinWorkspace(path.resolve(root,baselineId),root);
+    const out=outDir ? output(root,outDir,["result.json","result.md","execution.json"]) : undefined;
+    // Validate the default storage root before verification starts.
+    internalPath(root,"verifications");
+    const {result,resultPath}=await verifyCase({repoRoot:root,caseId,baselineId,outDir:out,signal:extra?.signal,workspaceOnly:true});
+    return reply(`Result: ${relative(root,resultPath)}\n${result.status}: ${result.reason}\nTests: ${result.testExitCode}; typechecks: ${result.typecheckExitCode}`,result.status==="invalid");
+  } catch(error) {return reply(`verify_case failed: ${String(error)}`,true);}
+});
+server.connect(new StdioServerTransport()).then(()=>{
+  console.error("[archpulse] MCP server running on stdio");
+  // StdioServerTransport only registers 'data'/'error' listeners and never
+  // calls stdin.resume(), so on Windows stdin stays in paused mode and the
+  // 'end' event never fires after the client closes the pipe.
+  // Calling resume() switches stdin to flowing mode so Node drains it and
+  // emits 'end' on EOF, allowing the process to exit cleanly instead of
+  // hanging until killed.
+  process.stdin.resume();
+  process.stdin.on("end", () => { process.exit(process.exitCode ?? 0); });
+}).catch(error=>{
+  console.error("[archpulse] Fatal error:",error); process.exitCode=1;
 });
