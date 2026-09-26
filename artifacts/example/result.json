@@ -8,7 +8,9 @@
       "rule": "ui-no-db",
       "from": "demo/packages/ui/src/orderService.ts",
       "to": "demo/packages/db/src/index.ts",
-      "severity": "error"
+      "severity": "error",
+      "cyclePath": null,
+      "evidence": "ui imports { saveOrder, findOrdersByUser } from @demo/db — forbidden: UI layer must not access db directly"
     }
   ],
   "persistentViolations": [
@@ -18,14 +20,15 @@
       "from": "demo/packages/shared/src/index.ts",
       "to": "demo/packages/domain/src/index.ts",
       "severity": "error",
-      "note": "Belongs to case-002, not in scope for this repair"
+      "cyclePath": null,
+      "evidence": "shared imports { formatOrder } from @demo/domain — forbidden: lower-level package must not depend on higher-level domain"
     }
   ],
   "newViolations": [],
-  "testCommand": "npx vitest run demo/packages/domain/src demo/packages/db/src demo/packages/ui/src",
+  "testCommand": "npx vitest run demo/packages/domain/src\nnpx vitest run demo/packages/db/src\nnpx vitest run demo/packages/ui/src\nnpx vitest run demo/packages/shared/src",
   "testExitCode": 0,
-  "testOutput": "Test Files  3 passed (3)\nTests       14 passed (14)",
+  "testOutput": "$ npx vitest run demo/packages/domain/src\nExit: 0\n\n$ npx vitest run demo/packages/db/src\nExit: 0\n\n$ npx vitest run demo/packages/ui/src\nExit: 0\n\n$ npx vitest run demo/packages/shared/src\nExit: 0\n",
   "typecheckExitCode": 0,
   "status": "verified",
-  "reason": "Target violation ui-no-db resolved. No new violations. All tests pass."
+  "reason": "All 1 selected violations resolved; no new violations. All configured tests and typechecks passed. 1 unrelated baseline violation(s) remain."
 }

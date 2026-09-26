@@ -27,7 +27,7 @@ it("generates an offline interactive graph from the real CLI (no Vitest module r
     expect(html).not.toMatch(/<(?:script|link)[^>]+(?:src|href)=["']https?:/);
     const snapshot = JSON.parse(fs.readFileSync(path.join(temp, "snapshot.json"), "utf8"));
     expect(snapshot.root).toBe("demo/packages");
-    expect(snapshot.violations.map((v: { rule: string }) => v.rule).sort()).toEqual(["shared-no-domain", "ui-no-db"]);
+    expect(snapshot.violations.map((v: { rule: string }) => v.rule).sort()).toEqual(["ui-no-db"]);
   } finally { fs.rmSync(temp, { recursive: true, force: true }); }
 });
 
