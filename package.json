@@ -17,7 +17,8 @@
     "compare": "tsx src/cli/index.ts compare",
     "start": "tsx src/mcp/server.ts",
     "viewer:dev": "vite --config src/viewer/vite.config.ts",
-    "viewer:build": "vite build --config src/viewer/vite.config.ts"
+    "viewer:build": "vite build --config src/viewer/vite.config.ts",
+    "verify": "tsx src/cli/index.ts verify"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

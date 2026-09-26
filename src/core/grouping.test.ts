@@ -14,7 +14,7 @@
  *  - JSON packet stays within the ~2 KB compact budget
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { groupViolations } from "../core/grouping.js";
 import { buildCasePacket } from "../core/casePacket.js";
 import type { SnapshotInput, SnapshotViolation } from "../core/grouping.js";
@@ -410,12 +410,10 @@ describe("buildCasePacket — SCHEMA.md contract", () => {
     expect(result.json.title).toContain("db");
   });
 
-  it("relevantTests uses sibling .test.ts inference", () => {
+  it("relevantTests does not invent files missing from the module inventory", () => {
     const group = firstGroup();
     const result = buildCasePacket("case-001", group, SNAPSHOT_BEFORE, ARCH_CONFIG);
-    for (const t of result.json.relevantTests) {
-      expect(t).toMatch(/\.test\.ts$/);
-    }
+    expect(result.json.relevantTests).toEqual([]);
   });
 
   it("produces a non-empty markdown string", () => {
@@ -453,14 +451,26 @@ describe("buildCasePacket — JSON size budget", () => {
 // cases.ts — runCases() integration tests
 // ---------------------------------------------------------------------------
 
-import { runCases } from "../cli/cases.js";
+import { runCases as invokeCases } from "../cli/cases.js";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 
+const caseTemps: string[] = [];
+afterEach(() => { for (const directory of caseTemps.splice(0)) fs.rmSync(directory,{recursive:true,force:true}); });
+async function runCases(args: string[]) {
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),"archpulse-case-test-root-")); caseTemps.push(root);
+  const normalized=[...args];
+  for (const flag of ["--snapshot","--config"]) {
+    const i=normalized.indexOf(flag); if (i>=0 && normalized[i+1]) normalized[i+1]=path.resolve(normalized[i+1]!);
+  }
+  if (!normalized.includes("--config")) normalized.push("--config",path.resolve("config/architecture.json"));
+  return invokeCases([...normalized,"--repo",root]);
+}
+
 describe("runCases — CLI orchestration", () => {
   function tmpDir() {
-    return fs.mkdtempSync(path.join(os.tmpdir(), "archpulse-test-"));
+    const directory=fs.mkdtempSync(path.join(os.tmpdir(), "archpulse-test-")); caseTemps.push(directory); return directory;
   }
 
   const SNAPSHOT_PATH = "artifacts/example/snapshot-before.json";
@@ -524,14 +534,14 @@ describe("runCases — CLI orchestration", () => {
       badSnap,
       JSON.stringify({
         schemaVersion: "99",
-        gitMarker: "test",
+        gitMarker: "test", root:"src", configHash:"test", incompleteResolutionCount:0,
         violations: [],
         modules: [],
       }),
     );
     await expect(
       runCases(["--snapshot", badSnap, "--out", out, "--config", CONFIG_PATH]),
-    ).rejects.toThrow("Unsupported snapshot schemaVersion");
+    ).rejects.toThrow("schemaVersion");
   });
 
   it("exits cleanly with 0 cases for an empty violations array", async () => {
@@ -541,7 +551,7 @@ describe("runCases — CLI orchestration", () => {
       emptySnap,
       JSON.stringify({
         schemaVersion: "1",
-        gitMarker: "test",
+        gitMarker: "test", root:"src", configHash:"test", incompleteResolutionCount:0,
         violations: [],
         modules: [],
       }),
@@ -560,7 +570,10 @@ describe("runCases — CLI orchestration", () => {
     await expect(runCases(["--out", "/tmp/x"])).rejects.toThrow("--snapshot");
   });
 
-  it("throws when --out is missing", async () => {
-    await expect(runCases(["--snapshot", SNAPSHOT_PATH])).rejects.toThrow("--out");
+  it("defaults output beside the snapshot when --out is missing", async () => {
+    const directory=tmpDir(); const snapshot=path.join(directory,"snapshot.json");
+    fs.copyFileSync(SNAPSHOT_PATH,snapshot);
+    const result=await runCases(["--snapshot",snapshot]);
+    expect(result.outDir).toBe(path.join(directory,"cases"));
   });
 });

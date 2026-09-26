@@ -26,7 +26,7 @@ beforeEach(() => {
   temp = fs.mkdtempSync(path.join(os.tmpdir(), "archpulse-workspace-"));
   root = path.join(temp, "repo"); fs.mkdirSync(root);
   vi.stubEnv("ARCHPULSE_ROOT", root);
-  vi.mocked(runScan).mockReset().mockResolvedValue({ snapshotPath: "out/snapshot.json", graphPath: "out/graph.html",
+  vi.mocked(runScan).mockReset().mockResolvedValue({ baselineId: "baseline/snapshot.json", snapshotPath: "out/snapshot.json", graphPath: "out/graph.html",
     violationCount: 0, errorCount: 0, warnCount: 0, violations: [], gitMarker: "abc", configHash: "hash",
     incompleteResolutionCount: 0, scannerWarnings: [] });
 });
@@ -35,7 +35,7 @@ const scan = (args: { workspacePath?: string; outDir?: string } = {}) => handler
 
 it("uses the trusted root and allows a new nested output", async () => {
   expect((await scan({ outDir: "new/deep/out" })).isError).not.toBe(true);
-  expect(runScan).toHaveBeenCalledWith({ repoRoot: root, outDir: path.join(root, "new/deep/out") });
+  expect(runScan).toHaveBeenCalledWith(expect.objectContaining({ repoRoot: root, outDir: path.join(root, "new/deep/out"), workspaceOnly: true }));
 });
 it.each([{ workspacePath: ".." }, { outDir: "../escape" }])("rejects traversal before scanning %j", async args => {
   expect((await scan(args)).isError).toBe(true); expect(runScan).not.toHaveBeenCalled();
@@ -78,15 +78,23 @@ it.skipIf(process.platform !== "win32")("rejects other drives and UNC shares wit
 });
 it("marks incomplete coverage and caps violations in the actual tool handler", async () => {
   const violations = Array.from({ length: 12 }, (_, i) => ({ id: `v${i}`, rule: "rule", from: "a", to: "b", severity: "error" }));
-  vi.mocked(runScan).mockResolvedValueOnce({ snapshotPath: "snapshot.json", graphPath: "graph.html",
+  vi.mocked(runScan).mockResolvedValueOnce({ baselineId: "baseline/snapshot.json", snapshotPath: "snapshot.json", graphPath: "graph.html",
     violationCount: 12, errorCount: 12, warnCount: 0, violations, gitMarker: "abc", configHash: "hash",
     incompleteResolutionCount: 2, scannerWarnings: ["Coverage incomplete"] });
   const text = (await scan()).content[0]!.text;
   expect(text).toContain("Scan incomplete"); expect(text).toContain("Coverage incomplete");
   expect(text).toContain("2 more violation"); expect(text).not.toContain("id:   v10");
 });
-it.each(["get_case", "verify_case"])("keeps %s explicitly unimplemented", async name => {
+it.each(["get_case", "verify_case"])("rejects %s with unavailable baseline", async name => {
   const reply = await handlers.get(name)!({ caseId: "case-001", baselineId: "baseline" });
-  expect(reply.isError).toBe(true); expect(reply.content[0]!.text).toContain("not yet implemented");
+  expect(reply.isError).toBe(true); expect(reply.content[0]!.text).toMatch(/failed|invalid/);
   expect(reply.content[0]!.text).not.toContain("npm run");
+});
+it("bounds UTF-8 summaries and reports truncation for oversized warnings",async()=>{
+  vi.mocked(runScan).mockResolvedValueOnce({baselineId:"baseline/snapshot.json",snapshotPath:"snapshot.json",graphPath:"graph.html",
+    violationCount:0,errorCount:0,warnCount:0,violations:[],gitMarker:"test",configHash:"hash",incompleteResolutionCount:1,
+    scannerWarnings:["very long warning ".repeat(500)]});
+  const response=(await scan()).content[0]!.text;
+  expect(Buffer.byteLength(response)).toBeLessThanOrEqual(2048);expect(response).toContain("truncated");
+  expect(response).toContain("Baseline: baseline/snapshot.json");
 });

@@ -15,7 +15,7 @@ interface Snapshot {
   root: string;              // repo-relative, slash-normalized scan root
   gitMarker: string;         // git commit SHA or "working-tree"
   scannerVersion: string;    // e.g. "dependency-cruiser@16.10.4"
-  configHash: string;        // SHA-256 of .dependency-cruiser.cjs content
+  configHash: string;        // SHA-256 of versioned effective scanner configuration
   timestamp: string;         // ISO 8601
   modules: Module[];
   edges: Edge[];
@@ -82,7 +82,7 @@ interface CasePacket {
 
 ## result.json
 
-Produced by: `archpulse compare` CLI / `verify_case` MCP tool (Owner E)  
+Produced by: `archpulse verify` CLI / `verify_case` MCP tool (Owner E)
 Consumed by: viewer (F), Bob skill (D)
 
 ```ts
@@ -108,7 +108,7 @@ violation IDs are missing from the baseline. Legacy absolute scan scopes require
 
 The implemented `compareSnapshots` helper returns architecture differences only. Any new
 violation (error, warning, or info) prevents a `verified` comparison. Its status does not
-assert that tests or typechecking passed; complete `VerifyResult` orchestration is pending.
+assert that tests or typechecking passed. `verify_case` and the `verify` CLI add the required checks and a fresh scan.
 
 **Example fixture:** `artifacts/example/result.json`
 
@@ -122,10 +122,28 @@ interface ArchitectureConfig {
   layers: Layer[];
   allowedDependencies: DependencyRule[];
   forbiddenDependencies: DependencyRule[];
-  testCommands: string[];   // allowlisted commands for verify_case
+  testCommands: string[];   // every allowlisted command runs during verify_case
+  typecheckCommands: string[]; // required for full verification; all run with no emit
   scanScope: string;        // path passed to depcruise
   scanExcludes: string[];   // patterns to exclude
 }
 ```
 
 Full file: `config/architecture.json`
+
+
+## Runtime provenance and compatibility
+
+Public snapshot, case, and result field shapes remain unchanged. New snapshot hashes cover effective dependency-cruiser rules/options, inherited TypeScript settings, scanner version, and project manifests/lockfiles; output paths and graph presentation settings do not affect them. Existing exported raw-file hash helpers retain their original behavior. Rescan old baselines before full verification; architecture-only comparison still accepts legacy fixture pairs.
+
+Each successful scan writes an immutable generation under `.archpulse/scans/<uuid>/`. The returned `baselineId` is its repository-relative `snapshot.json` path, not a git marker. The generation's private `manifest.json` records repository identity, scope/config, policy hash, fingerprint version, and artifact checksums. Requested scan output directories remain convenience copies. `gitMarker` and packet `scanId` retain their existing meaning.
+
+Case registries, packet checksums, sibling relationships, latest-baseline pointers, and per-command execution records are internal sidecars, not new required viewer fields. Full JSON/Markdown packets retain all evidence; MCP text is bounded to 2 KiB. A long cycle can appear in multiple linked case packets, each with at most six primary files and complete cycle evidence.
+
+## Comparison versus verification
+
+`compareSnapshots` and the `compare` CLI return architecture-only differences. Resolved/persistent arrays cover the selected case; new violations cover the whole scan. The CLI writes `comparison.json`.
+
+`verify_case` and `verify` produce `VerifyResult` in `result.json` plus `result.md`. The result's persistent array includes all surviving baseline violations, matching the example fixture, but status is determined by the selected case. Every configured test and typecheck must pass for `verified`. Unusable evidence/configuration is `invalid`; check failures, timeouts, cancellation, and new violations prevent success. Source/config changes during checks invalidate the run.
+
+`testCommand` lists executed test commands separated by newlines. `testOutput` contains bounded, labelled test/typecheck output. Aggregate exit codes use the first nonzero code; `-1` indicates checks could not run or were incomplete, and `124` indicates command timeout/cancellation. Detailed execution records are stored separately. These numeric values do not change the public result field types.
