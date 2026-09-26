@@ -45,13 +45,14 @@ export async function withRepositoryLock<T>(root: string, action: () => Promise<
   finally { fs.closeSync(fd); fs.unlinkSync(lock); }
 }
 
-/** Stage all writes, then replace/delete only explicitly owned regular files. */
-export function publishFiles(changes: Map<string, string | null>, beforeCommit?: (stagedFiles: string[]) => void): void {
+/** Stage and install owned files. Final validation commits; cleanup cannot undo success. */
+export function publishFiles(changes: Map<string, string | null>, beforeCommit?: (stagedFiles: string[]) => void,
+  beforeFinalize?: () => void): void {
   const staged = new Map<string, string>();
   const backups = new Map<string, string>();
   const published: string[] = [];
   const token = randomUUID();
-  let cleanup = true;
+  let committed = false;
   try {
     for (const [file, content] of changes) {
       fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -74,14 +75,25 @@ export function publishFiles(changes: Map<string, string | null>, beforeCommit?:
     for (const [file, temporary] of staged) {
       fs.renameSync(temporary, file); published.push(file);
     }
+    // Backups remain available until every replacement and validation succeeds.
+    beforeFinalize?.();
+    committed = true;
   } catch (error) {
     const errors: unknown[] = [error];
     for (const file of published) { try { fs.unlinkSync(file); } catch (failure) { errors.push(failure); } }
     for (const [file, backup] of backups) { try { fs.renameSync(backup, file); } catch (failure) { errors.push(failure); } }
-    if (errors.length > 1) { cleanup = false; throw new AggregateError(errors, `Publication rollback failed; backups have suffix ${token}.bak`); }
+    if (errors.length > 1) throw new AggregateError(errors, `Publication rollback failed; backups have suffix ${token}.bak`);
     throw error;
   } finally {
-    for (const temporary of staged.values()) { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
-    if (cleanup) for (const backup of backups.values()) { if (fs.existsSync(backup)) fs.unlinkSync(backup); }
+    const retained: string[] = [];
+    // Only successful publication owns disposable backups. Failed rollback needs them.
+    const disposable = [...staged.values(), ...(committed ? backups.values() : [])];
+    for (const file of disposable) {
+      try { fs.unlinkSync(file); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") retained.push(file);
+      }
+    }
+    if (retained.length) console.error(`[archpulse] Artifact cleanup warning: ${retained.length} file(s) retained:\n${retained.join("\n")}`);
   }
 }

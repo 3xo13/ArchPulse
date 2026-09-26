@@ -35,6 +35,8 @@ export async function verifyCase(options: VerifyOptions): Promise<{ result: Veri
       if (Date.now() >= deadline) controller.abort(new Error("Verification deadline exceeded"));
       controller.signal.throwIfAborted();
     };
+    const isCancellation = (error: unknown) => controller.signal.aborted &&
+      (error === controller.signal.reason || (error instanceof Error && error.name === "AbortError" && error.cause === controller.signal.reason));
     const tests: RunResult[] = [], types: RunResult[] = [];
     let expectedTests=0, expectedTypes=0;
     let afterSnapshotPath: string | undefined;
@@ -42,7 +44,9 @@ export async function verifyCase(options: VerifyOptions): Promise<{ result: Veri
     let checkedState: string | undefined;
     const reportFiles = ["result.json", "result.md", "execution.json"].map(name => path.join(output, name));
     const checkState = (staged: string[] = []) => {
-      if (checkedState !== undefined && checkedState !== sourceState(root, [...reportFiles, ...staged])) {
+      const currentState = checkedState === undefined ? undefined : sourceState(root, [...reportFiles, ...staged]);
+      checkActive(); // Hashing is synchronous: the timeout callback may not have run yet.
+      if (checkedState !== currentState) {
         throw new SourceChangedError("Source or configuration changed during verification; retry with a stable workspace.");
       }
     };
@@ -60,6 +64,7 @@ export async function verifyCase(options: VerifyOptions): Promise<{ result: Veri
       if (!config.testCommands.length || !config.typecheckCommands?.length) throw new Error("Full verification requires nonempty testCommands and typecheckCommands.");
       expectedTests=config.testCommands.length;expectedTypes=config.typecheckCommands.length;
       checkedState=sourceState(root,reportFiles);
+      checkActive();
       for (const [kind,commands,runs] of [["testCommands",config.testCommands,tests],["typecheckCommands",config.typecheckCommands,types]] as const) {
         for (let i=0;i<commands.length;i++) {
           checkActive();
@@ -101,24 +106,24 @@ export async function verifyCase(options: VerifyOptions): Promise<{ result: Veri
       diagnosticSnapshotPath=afterSnapshotPath ?? diagnosticSnapshotPath; afterSnapshotPath=undefined;
       result.afterId=""; result.resolvedViolations=[]; result.persistentViolations=[]; result.newViolations=[];
     };
-    const publish = (beforeCommit?: (staged: string[]) => void) => publishFiles(new Map([
+    const publish = (beforeCommit?: (staged: string[]) => void, beforeFinalize?: () => void) => publishFiles(new Map([
       [resultPath,json(result)], [path.join(output,"result.md"),`# Verification: ${result.status}\n\n${result.reason}\n\nTests: ${result.testExitCode}\n\nTypecheck: ${result.typecheckExitCode}\n\n\`\`\`text\n${result.testOutput}\n\`\`\`\n`],
       [path.join(output,"execution.json"),json({ tests, typechecks:types, expectedTests, expectedTypes, afterSnapshotPath, diagnosticSnapshotPath })],
-    ]), beforeCommit);
+    ]), beforeCommit, beforeFinalize);
     try {
       await withRepositoryLock(root, () => {
         checkActive();
         try {
           checkState();
-          publish(staged => { checkActive(); checkState(staged); });
+          publish(staged => { checkActive(); checkState(staged); }, checkActive);
         } catch (error) {
           if (!(error instanceof SourceChangedError)) throw error;
           discardComparison(); result.status="invalid"; result.reason=error.message;
-          publish(checkActive);
+          publish(checkActive, checkActive);
         }
       }, controller.signal);
     } catch (error) {
-      if (!controller.signal.aborted) throw error;
+      if (!isCancellation(error)) throw error;
       if (result.status === "invalid") discardComparison();
       result.status = "failed";
       result.reason = "Verification cancelled or overall deadline exceeded; success was not published.";

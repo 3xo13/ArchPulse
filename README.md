@@ -151,6 +151,8 @@ Scans honor the TypeScript configuration selected by dependency-cruiser and fing
 
 Cancellation and the verification deadline remain active while waiting to publish reports. If the publication lock is occupied after cancellation, verification returns failure with **Report not saved** and preserves existing artifacts; it never points to a stale report as new evidence.
 
+Publication commits only after all replacements and the final deadline/cancellation check succeed. Expiry during hashing or replacement triggers rollback before attempting to save a failed report. Backup cleanup happens after this commit boundary: a cleanup warning on stderr does not invalidate the saved report or change a successful exit code. Warnings identify retained files such as `<artifact>.<uuid>.bak` (or unused `.tmp` files). After confirming the saved artifacts and stopping active writers, these specific leftover files can be removed manually. A rollback-failure error is different: retain its recovery backups until the failure is investigated.
+
 Viewer validation:
 
 ```bash

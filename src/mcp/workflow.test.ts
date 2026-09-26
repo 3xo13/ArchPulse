@@ -8,6 +8,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { runProcess } from "../core/process.js";
 import { json } from "../core/storage.js";
+import { runScan } from "../cli/scan.js";
+import { generateCases } from "../core/cases.js";
 
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),"../..");
 const loader=pathToFileURL(createRequire(import.meta.url).resolve("tsx/esm")).href;
@@ -68,4 +70,37 @@ it("dispatches real scan, cases, compare, and verify CLI commands",{timeout:6000
   const fixtureResult=JSON.parse(fs.readFileSync(path.join(repo,"artifacts/example/result.json"),"utf8"));
   expect(Object.keys(result).sort()).toEqual(Object.keys(fixtureResult).sort());
   expect(result.status).toBe("verified");
+});
+
+it("keeps CLI and MCP results successful when backup cleanup fails, with warnings only on stderr",{timeout:60000},async()=>{
+  const f=fixture();
+  f.write("cleanup-hook.mjs",`import fs from "node:fs";import {syncBuiltinESMExports} from "node:module";
+    const unlink=fs.unlinkSync;fs.unlinkSync=function(file){
+      if(String(file).endsWith(".bak"))throw Object.assign(new Error("simulated locked backup"),{code:"EPERM"});
+      return unlink(file);};syncBuiltinESMExports();`);
+  const hook=pathToFileURL(path.join(f.root,"cleanup-hook.mjs")).href;
+  const scan=await runScan({repoRoot:f.root});
+  const cases=await generateCases({repoRoot:f.root,snapshotPath:scan.baselineId});
+  const caseId=cases.cases[0]!.caseId;f.write("src/a.js","export const a=1;");
+  for(const name of ["result.json","result.md","execution.json"])f.write(`.archpulse/result/${name}`,`previous ${name}`);
+  const cli=await runProcess(process.execPath,["--import",loader,"--import",hook,path.join(repo,"src/cli/index.ts"),"verify",
+    "--repo",f.root,"--before",scan.baselineId,"--case",caseId,"--out",".archpulse/result"],{cwd:f.root,timeoutMs:25000});
+  expect(cli.exitCode,cli.output).toBe(0);expect(cli.stdout).toContain("verified:");
+  expect(cli.stdout).not.toContain("cleanup warning");expect(cli.stderr).toContain("Artifact cleanup warning: 3 file(s) retained");
+  const file=path.join(f.root,".archpulse/result/result.json");
+  expect(JSON.parse(fs.readFileSync(file,"utf8")).status).toBe("verified");
+  const transport=new StdioClientTransport({command:process.execPath,args:["--import",loader,"--import",hook,path.join(repo,"src/mcp/server.ts")],cwd:f.root,
+    env:{...Object.fromEntries(Object.entries(process.env).filter((entry):entry is [string,string]=>entry[1]!==undefined)),ARCHPULSE_ROOT:f.root},stderr:"pipe"});
+  let stderr="";transport.stderr?.on("data",chunk=>{stderr+=String(chunk);});
+  const client=new Client({name:"cleanup-test",version:"1"});
+  try{
+    await client.connect(transport);
+    const response=await client.callTool({name:"verify_case",arguments:{baselineId:scan.baselineId,caseId,outDir:".archpulse/result"}});
+    expect(response.isError,text(response)).not.toBe(true);expect(text(response)).toContain("verified:");
+    expect(text(response)).toContain("Result: .archpulse/result/result.json");expect(text(response)).not.toContain("cleanup warning");
+    expect(JSON.parse(fs.readFileSync(file,"utf8")).status).toBe("verified");
+  }finally{await client.close();}
+  expect(stderr).toContain("Artifact cleanup warning: 3 file(s) retained");
+  expect(fs.readdirSync(path.dirname(file)).filter(name=>name.endsWith(".bak"))).toHaveLength(6);
+  expect(fs.existsSync(path.join(f.root,".archpulse/operation.lock"))).toBe(false);
 });
