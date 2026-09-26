@@ -32,6 +32,8 @@ Dependency installation does not write Bob configuration. Graph rendering uses b
 
 ## Install the Bob add-on
 
+For setup-free scans across JS/TS projects, run `node scripts/install-bob-addon.js --global` once and reload Bob. This mode keeps ArchPulse files outside your projects and requires one-time command approval before verification. See [the global installation and external-profile guide](ZERO_CONFIG.md) for supported layouts, limitations, and the complete workflow. The project-specific installation below remains supported.
+
 Run the installer from the ArchPulse directory, pointing it at the workspace you want to use with Bob IDE:
 
 ```bash

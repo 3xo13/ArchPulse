@@ -7,6 +7,8 @@ import { architectureSchema, caseSnapshotSchema, casePacketSchema } from "./vali
 import { digest, internalPath, isScanArchive, json, publishFiles, readJson, withRepositoryLock } from "./storage.js";
 import { loadBaseline, policyHash, stable } from "./provenance.js";
 import { validateWithinWorkspace } from "./workspace.js";
+import { projectContext, projectArchitecture, validateArtifact, withoutProject } from "./project.js";
+import { approvedChecks } from "./policy.js";
 
 const registrySchema = z.object({ next: z.number().int().positive(), groups: z.record(z.string(), z.string().regex(/^case-\d{3,}$/)) });
 const indexSchema = z.object({ cases: z.array(z.object({ caseId: z.string().regex(/^case-\d{3,}$/) }).passthrough()) });
@@ -38,26 +40,28 @@ export async function generateCases(options: CaseOptions): Promise<CasesResult> 
     const source = path.resolve(root, options.snapshotPath);
     const snapshot = caseSnapshotSchema.parse(readJson(source));
     if (new Set(snapshot.violations.map(v=>v.id)).size !== snapshot.violations.length) throw new Error("Snapshot has duplicate violation IDs.");
-    const config = architectureSchema.parse(readJson(path.resolve(root, options.configPath ?? "config/architecture.json")));
-    const out = path.resolve(root, options.outDir ?? path.join(path.dirname(source), "cases"));
+    const config = projectContext(root) ? projectArchitecture(root) : architectureSchema.parse(readJson(path.resolve(root, options.configPath ?? "config/architecture.json")));
+    if(projectContext(root)){try{config.testCommands=approvedChecks(root).tests.map(c=>c.command);}catch{/* Cases remain available before check approval. */}}
+    const out = path.resolve(projectContext(root)?.storage??root, options.outDir ?? path.join(path.dirname(source), "cases"));
     if (isScanArchive(root,out)) {
       const baseline=loadBaseline(root,source);
       if (path.resolve(out)!==path.join(baseline.directory,"cases")) throw new Error("Cannot publish cases over another immutable scan.");
       const index=path.join(out,"index.json");
-      validateWithinWorkspace(index,root);
+      validateArtifact(index,root);
       if (fs.existsSync(index)) {
-        const metadataFile=path.join(out,"metadata.json");validateWithinWorkspace(metadataFile,root);
+        const metadataFile=path.join(out,"metadata.json");validateArtifact(metadataFile,root);
         const metadata=metadataSchema.parse(readJson(metadataFile));
         if(metadata.snapshotHash!==baseline.manifest.snapshotHash) throw new Error("Case baseline mismatch.");
         const entries=indexSchema.parse(readJson(index)).cases as unknown as CaseIndexEntry[];
         for(const entry of entries) {
-          const file=path.join(out,`${entry.caseId}.json`);validateWithinWorkspace(file,root);
+          const file=path.join(out,`${entry.caseId}.json`);validateArtifact(file,root);
           if(digest(fs.readFileSync(file))!==metadata.packets[entry.caseId]) throw new Error("Case packet has been modified.");
         }
         return {caseCount:entries.length,outDir:out,oversizedCases:[],cases:entries};
       }
       if(policyHash(root)!==baseline.manifest.policyHash) throw new Error("Verification policy changed; capture a fresh baseline.");
     }
+    if(projectContext(root))validateArtifact(out,root);
     fs.mkdirSync(out, { recursive: true });
     // Even explicit CLI output must not follow links through its managed files.
     const registryPath = internalPath(root, "case-registry.json");
@@ -96,7 +100,9 @@ export async function generateCases(options: CaseOptions): Promise<CasesResult> 
     changes.set(path.join(out,"index.json"),json({ cases: entries }));
     changes.set(path.join(out,"metadata.json"),json({ snapshotHash: digest(fs.readFileSync(source)), packets, relationships }));
     changes.set(registryPath,json(registry));
-    for (const target of changes.keys()) validateWithinWorkspace(target, target === registryPath ? root : out);
+    for (const target of changes.keys()) {
+      if(projectContext(root))validateArtifact(target,root);else validateWithinWorkspace(target, target === registryPath ? root : out);
+    }
     options.signal?.throwIfAborted();
     publishFiles(changes, () => options.signal?.throwIfAborted());
     return { caseCount: entries.length, outDir: out, oversizedCases, cases: entries };
@@ -106,25 +112,37 @@ export async function generateCases(options: CaseOptions): Promise<CasesResult> 
 export async function ensureBaselineCases(root: string, identifier?: string, signal?: AbortSignal) {
   const baseline = loadBaseline(root, identifier);
   const directory = path.join(baseline.directory, "cases");
-  validateWithinWorkspace(directory,root);
+  validateArtifact(directory,root);
   if (!fs.existsSync(path.join(directory,"index.json"))) {
     if (policyHash(root) !== baseline.manifest.policyHash) throw new Error("Verification policy changed; capture a fresh baseline before generating cases.");
     await generateCases({ repoRoot: root, snapshotPath: baseline.snapshotPath, outDir: directory, signal });
   }
   const metadataFile = path.join(directory,"metadata.json");
-  validateWithinWorkspace(metadataFile,root);
+  validateArtifact(metadataFile,root);
   const metadata = metadataSchema.parse(readJson(metadataFile));
   if (metadata.snapshotHash !== baseline.manifest.snapshotHash) throw new Error("Cases do not belong to this baseline.");
-  const index = path.join(directory,"index.json"); validateWithinWorkspace(index,root);
+  const index = path.join(directory,"index.json"); validateArtifact(index,root);
   const cases = indexSchema.parse(readJson(index)).cases;
   return { ...baseline, caseDirectory: directory, cases, metadata };
 }
 
 export async function getCase(root: string, caseId: string, identifier?: string, signal?: AbortSignal) {
   if (!/^case-\d{3,}$/.test(caseId)) throw new Error("Invalid case ID.");
+  if(projectContext(root)&&identifier){
+    const requested=path.resolve(root,identifier),legacy=path.join(root,".archpulse","scans");
+    const relative=path.relative(legacy,requested);
+    if(!path.isAbsolute(relative)&&relative!==".."&&!relative.startsWith(`..${path.sep}`)){
+      validateWithinWorkspace(requested,root);
+      if(!fs.existsSync(path.join(path.dirname(requested),"cases","index.json")))throw new Error("Legacy baseline has no recorded cases; capture a new external baseline.");
+      return withoutProject(()=>readCase(root,caseId,identifier,signal));
+    }
+  }
+  return readCase(root,caseId,identifier,signal);
+}
+async function readCase(root:string,caseId:string,identifier?:string,signal?:AbortSignal){
   const baseline = await ensureBaselineCases(root,identifier,signal);
   if (!baseline.cases.some(entry=>entry.caseId===caseId)) throw new Error(`Case '${caseId}' does not exist in this baseline.`);
-  const file = path.join(baseline.caseDirectory,`${caseId}.json`); validateWithinWorkspace(file,root);
+  const file = path.join(baseline.caseDirectory,`${caseId}.json`); validateArtifact(file,root);
   if (digest(fs.readFileSync(file)) !== baseline.metadata.packets[caseId]) throw new Error("Case packet has been modified; capture a fresh baseline.");
   const packet = casePacketSchema.parse(readJson(file));
   // Validate its selected IDs against immutable scanner evidence even if metadata was edited.

@@ -13,6 +13,7 @@
  */
 
 import type { ViolationGroup, SnapshotInput, SnapshotViolation } from "./grouping.js";
+import { minimatch } from "minimatch";
 
 // ---------------------------------------------------------------------------
 // Architecture config types  (mirror config/architecture.json + SCHEMA.md)
@@ -109,8 +110,7 @@ function dominantSeverity(violations: SnapshotViolation[]): "error" | "warn" {
 function layerForPath(path: string, layers: LayerDef[]): string | undefined {
   for (const layer of layers) {
     // Convert "demo/packages/ui/src/**" → prefix "demo/packages/ui/src/"
-    const prefix = layer.glob.replace(/\/\*\*$/, "/");
-    if (path.startsWith(prefix) || path.replace(/\\/g, "/").startsWith(prefix)) {
+    if (minimatch(path.replace(/\\/g, "/"),layer.glob,{dot:true})) {
       return layer.name;
     }
   }

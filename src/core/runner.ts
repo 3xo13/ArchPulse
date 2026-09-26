@@ -1,6 +1,10 @@
 import { runProcess, type ProcessOptions } from "./process.js";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import * as path from "node:path";
+import { projectContext } from "./project.js";
+import { approvedChecks } from "./policy.js";
+import { validateWithinWorkspace } from "./workspace.js";
+import { parse as parseYaml } from "yaml";
 
 export interface RunResult {
   command: string;
@@ -67,6 +71,12 @@ export async function runTestCommand(commandIndex: number, repoRoot?: string, op
 
 export async function runConfiguredCommand(kind: "testCommands" | "typecheckCommands", commandIndex: number, repoRoot?: string, options: Partial<ProcessOptions> = {}): Promise<RunResult> {
   const root = path.resolve(repoRoot ?? process.cwd());
+  if(projectContext(root)){
+    const approved=approvedChecks(root),commands=kind==="testCommands"?approved.tests:approved.typechecks;
+    if(!Number.isInteger(commandIndex)||!commands[commandIndex])throw new Error("Invalid approved command index.");
+    const selected=commands[commandIndex]!;const cwd=path.resolve(root,selected.cwd);validateWithinWorkspace(cwd,root);
+    return runCommand(selected.command,cwd,options);
+  }
   const configPath = path.join(root, "config", "architecture.json");
   let config: Partial<Record<typeof kind, unknown>>;
   try { config = JSON.parse(readFileSync(configPath, "utf8")); }
@@ -79,6 +89,34 @@ export async function runConfiguredCommand(kind: "testCommands" | "typecheckComm
     throw new TypeError(`commandIndex ${commandIndex} is out of range for ${config[kind].length} test commands.`);
   }
   const command = config[kind][commandIndex] as string;
+  return runCommand(command,root,options);
+}
+
+export function managerEntry(name:"pnpm"|"yarn",root:string):string {
+  const candidates:string[]=[];
+  if(name==="yarn"){
+    const config=path.join(root,".yarnrc.yml");
+    if(existsSync(config)){
+      const data=parseYaml(readFileSync(config,"utf8")) as {yarnPath?:unknown}|null;
+      if(data?.yarnPath!==undefined){
+        if(typeof data.yarnPath!=="string")throw new Error("Invalid yarnPath in .yarnrc.yml");
+        const file=path.resolve(root,data.yarnPath);validateWithinWorkspace(file,root);candidates.push(file);
+      }
+    }
+  }
+  const suffix=name==="pnpm"?"pnpm/bin/pnpm.cjs":"yarn/bin/yarn.js";
+  for(const dir of [path.dirname(process.execPath),...(process.env.PATH??"").split(path.delimiter)]){
+    if(!dir)continue;
+    candidates.push(path.join(dir,"node_modules",suffix),path.resolve(dir,"../lib/node_modules",suffix));
+    for(const binary of [name,`${name}.cmd`]){
+      try{const real=realpathSync(path.join(dir,binary));if(/\.(?:c?js|mjs)$/.test(real)&&!real.includes("corepack"))candidates.push(real);}catch{/* Not installed here. */}
+    }
+  }
+  const found=candidates.find(file=>existsSync(file)&&statSync(file).isFile());
+  if(!found)throw new Error(`Cannot find installed ${name} JavaScript entry point. Install ${name} separately; ArchPulse will not download it or enable Corepack.`);
+  return found;
+}
+async function runCommand(command:string,root:string,options:Partial<ProcessOptions>):Promise<RunResult>{
   const [binary, ...arguments_] = tokenize(command);
   const npmName = path.basename(binary!).replace(/\.cmd$/i, "").toLowerCase();
   const isNpx = npmName === "npx";
@@ -91,11 +129,16 @@ export async function runConfiguredCommand(kind: "testCommands" | "typecheckComm
       }
       args = [npmEntry(npmName as "npm" | "npx"), ...(isNpx ? ["--no-install", "--offline"] : []), ...args];
       executable = process.execPath;
+    } else if(npmName==="pnpm"||npmName==="yarn"){
+      if(!["run","exec"].includes(args[0]??""))throw new Error("Only installed package-manager run/exec commands are supported; installation and downloads are disabled.");
+      args=[managerEntry(npmName,root),...args];executable=process.execPath;
     } else if (binary === "node") executable = process.execPath;
   } catch (error) { return { command, exitCode: 1, output: String(error) }; }
 
   const result = await runProcess(executable, args, { ...options, cwd: root,
-    env: { ...process.env, ...(isNpx ? { npm_config_yes: "false", npm_config_offline: "true" } : {}) },
+    env: { ...process.env, COREPACK_ENABLE_NETWORK:"0",
+      ...(npmName==="pnpm"?{npm_config_manage_package_manager_versions:"false"}:{}),...(npmName==="yarn"?{YARN_ENABLE_NETWORK:"0"}:{}),
+      ...(isNpx ? { npm_config_yes: "false", npm_config_offline: "true" } : {}) },
   });
   const suffix = isNpx && result.exitCode !== 0 ? "\nEnsure workspace test dependencies are installed; automatic installation is disabled." : "";
   const output = result.output + (Buffer.byteLength(result.output) + Buffer.byteLength(suffix) < 256 * 1024 && result.output.split("\n").length < 499 ? suffix : "");

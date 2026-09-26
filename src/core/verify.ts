@@ -9,7 +9,8 @@ import { architectureSchema, caseSnapshotSchema } from "./validation.js";
 import { boundedOutput } from "./process.js";
 import { policyHash, sourceState } from "./provenance.js";
 import { assertMutableOutput, internalPath, json, publishFiles, readJson, RepositoryBusyError, withRepositoryLock } from "./storage.js";
-import { validateWithinWorkspace } from "./workspace.js";
+import { projectContext, validateArtifact } from "./project.js";
+import { approvedChecks } from "./policy.js";
 
 export interface VerifyResult extends CompareResult {
   caseId: string; testCommand: string; testExitCode: number; testOutput: string; typecheckExitCode: number;
@@ -21,9 +22,9 @@ const aggregate = (runs: RunResult[]) => runs.length ? (runs.find(run=>run.exitC
 
 export async function verifyCase(options: VerifyOptions): Promise<{ result: VerifyResult; resultPath?: string; afterSnapshotPath?: string }> {
   const root = fs.realpathSync(path.resolve(options.repoRoot ?? process.cwd()));
-  const output = path.resolve(root, options.outDir ?? internalPath(root,"verifications",randomUUID()));
+  const output = path.resolve(projectContext(root)?.storage??root, options.outDir ?? internalPath(root,"verifications",randomUUID()));
   assertMutableOutput(root,output);
-  if(options.workspaceOnly)validateWithinWorkspace(output,root);
+  if(options.workspaceOnly||projectContext(root))validateArtifact(output,root);
   const controller = new AbortController();
   const deadline = Date.now() + (options.timeoutMs ?? 600_000);
   const timeout = setTimeout(()=>controller.abort(new Error("Verification deadline exceeded")),options.timeoutMs ?? 600_000);
@@ -43,8 +44,9 @@ export async function verifyCase(options: VerifyOptions): Promise<{ result: Veri
     let diagnosticSnapshotPath: string | undefined;
     let checkedState: string | undefined;
     const reportFiles = ["result.json", "result.md", "execution.json"].map(name => path.join(output, name));
+    const state=(ignored:string[])=>sourceState(root,ignored)+(projectContext(root)?policyHash(root):"");
     const checkState = (staged: string[] = []) => {
-      const currentState = checkedState === undefined ? undefined : sourceState(root, [...reportFiles, ...staged]);
+      const currentState = checkedState === undefined ? undefined : state([...reportFiles, ...staged]);
       checkActive(); // Hashing is synchronous: the timeout callback may not have run yet.
       if (checkedState !== currentState) {
         throw new SourceChangedError("Source or configuration changed during verification; retry with a stable workspace.");
@@ -59,11 +61,13 @@ export async function verifyCase(options: VerifyOptions): Promise<{ result: Veri
       const before = caseSnapshotSchema.parse(readJson(baseline.snapshotPath));
       result.baselineId=before.gitMarker;
       if (before.incompleteResolutionCount) throw new Error("Baseline contains unresolved dependencies; rescan after fixing resolution.");
+      if(baseline.manifest.coverageIncomplete)throw new Error("Baseline coverage is incomplete or unsupported; resolve discovery warnings and rescan before verification.");
       if (policyHash(root)!==baseline.manifest.policyHash) throw new Error("Verification policy changed; capture a fresh baseline.");
-      const config=architectureSchema.parse(readJson(path.join(root,"config/architecture.json")));
+      const approval=projectContext(root)?approvedChecks(root):undefined;
+      const config=approval?{testCommands:approval.tests.map(c=>c.command),typecheckCommands:approval.typechecks.map(c=>c.command)}:architectureSchema.parse(readJson(path.join(root,"config/architecture.json")));
       if (!config.testCommands.length || !config.typecheckCommands?.length) throw new Error("Full verification requires nonempty testCommands and typecheckCommands.");
       expectedTests=config.testCommands.length;expectedTypes=config.typecheckCommands.length;
-      checkedState=sourceState(root,reportFiles);
+      checkedState=state(reportFiles);
       checkActive();
       for (const [kind,commands,runs] of [["testCommands",config.testCommands,tests],["typecheckCommands",config.typecheckCommands,types]] as const) {
         for (let i=0;i<commands.length;i++) {
@@ -73,10 +77,11 @@ export async function verifyCase(options: VerifyOptions): Promise<{ result: Veri
         }
       }
       checkActive();
-      const after=await runScan({ repoRoot:root,configPath:baseline.manifest.configPath,scanScope:baseline.manifest.scope,
+      const after=await runScan({ repoRoot:root,configPath:baseline.manifest.automatic?undefined:baseline.manifest.configPath,scanScope:baseline.manifest.scope,
         outDir:internalPath(root,"verification-work",randomUUID()),signal:controller.signal,timeoutMs:120_000,workspaceOnly:options.workspaceOnly });
       diagnosticSnapshotPath=path.resolve(root,after.baselineId);
       checkActive();
+      if(after.coverageIncomplete)throw new Error("Fresh scan has incomplete or unsupported coverage; resolve discovery warnings and retry.");
       checkState();
       const comparison=compareSnapshots(baseline.snapshotPath,diagnosticSnapshotPath,baseline.packet);
       const afterSnapshot=caseSnapshotSchema.parse(readJson(diagnosticSnapshotPath));
@@ -101,7 +106,7 @@ export async function verifyCase(options: VerifyOptions): Promise<{ result: Veri
     for (const run of [...tests,...types]) captured.collect(`$ ${run.command}\nExit: ${run.exitCode}\n${run.output}\n`);
     result.testOutput=captured.value();
     const resultPath=path.join(output,"result.json");
-    if(options.workspaceOnly)for(const name of ["result.json","result.md","execution.json"])validateWithinWorkspace(path.join(output,name),root);
+    if(options.workspaceOnly||projectContext(root))for(const name of ["result.json","result.md","execution.json"])validateArtifact(path.join(output,name),root);
     const discardComparison = () => {
       diagnosticSnapshotPath=afterSnapshotPath ?? diagnosticSnapshotPath; afterSnapshotPath=undefined;
       result.afterId=""; result.resolvedViolations=[]; result.persistentViolations=[]; result.newViolations=[];

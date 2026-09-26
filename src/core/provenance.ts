@@ -5,6 +5,9 @@ import type { ICruiseResult } from "dependency-cruiser";
 import { z } from "zod/v4";
 import { digest, internalPath, readJson } from "./storage.js";
 import { canonicalPath, validateWithinWorkspace } from "./workspace.js";
+import { projectContext, validateArtifact, artifactName, profile } from "./project.js";
+import { externalPolicyHash } from "./policy.js";
+import { generatedDirectories, discoverProject } from "./discovery.js";
 
 const slash = (value: string) => value.replace(/\\/g, "/");
 export function stable(value: unknown): string {
@@ -13,6 +16,7 @@ export function stable(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 export function policyHash(root: string): string {
+  if(projectContext(root))return externalPolicyHash(root);
   const file = path.join(root, "config/architecture.json");
   return digest(stable(fs.existsSync(file) ? readJson(file) : null));
 }
@@ -54,7 +58,7 @@ export function configurationFingerprint(raw: ICruiseResult, root: string, scope
   const collectProjectManifests = (directory: string) => {
     if(fs.existsSync(path.join(directory,"package.json")))addAncestors(path.join(directory,"placeholder"));
     for(const entry of fs.readdirSync(directory,{withFileTypes:true})) {
-      if(entry.isDirectory() && !["node_modules",".git",".archpulse","dist","coverage"].includes(entry.name)) {
+      if(entry.isDirectory() && !generatedDirectories.has(entry.name)) {
         collectProjectManifests(path.join(directory,entry.name));
       }
     }
@@ -67,9 +71,10 @@ export function configurationFingerprint(raw: ICruiseResult, root: string, scope
 }
 
 export const manifestSchema = z.object({
-  version: z.literal(2), id: z.string().uuid(), repoRoot: z.string(), configPath: z.string(), scope: z.string(),
+  version: z.union([z.literal(2),z.literal(3)]), id: z.string().uuid(), repoRoot: z.string(), configPath: z.string(), scope: z.string(),
   fingerprintVersion: z.literal(2), configHash: z.string(), policyHash: z.string(),
   snapshotHash: z.string(), graphHash: z.string(),
+  automatic:z.boolean().optional(),coverageIncomplete:z.boolean().optional(),storageRoot:z.string().optional(),
 });
 export type Manifest = z.infer<typeof manifestSchema>;
 
@@ -82,7 +87,10 @@ export function loadBaseline(root: string, identifier?: string) {
   // Identifiers are paths, never ambiguous commit labels.
   if (path.basename(identifier) !== "snapshot.json") throw new Error("Use the immutable baselineId/snapshot path returned by scan; git markers are ambiguous.");
   const requested = path.resolve(root, identifier);
+  const context=projectContext(root);
+  if(context)validateArtifact(requested,root);
   const record = path.join(path.dirname(requested), "manifest.json");
+  if(context)validateArtifact(record,root);
   const requestedRelative=path.relative(root,requested);
   if(!path.isAbsolute(requestedRelative) && requestedRelative!==".." && !requestedRelative.startsWith(`..${path.sep}`)) {
     validateWithinWorkspace(requested,root);validateWithinWorkspace(record,root);
@@ -92,15 +100,19 @@ export function loadBaseline(root: string, identifier?: string) {
   if (fs.realpathSync(manifest.repoRoot) !== root) throw new Error("Baseline repository mismatch; rescan this repository.");
   const archive = internalPath(root, "scans", manifest.id);
   const snapshotPath = path.join(archive, "snapshot.json");
-  for (const file of [snapshotPath, path.join(archive, "graph.html"), path.join(archive, "manifest.json")]) validateWithinWorkspace(file, root);
+  for (const file of [snapshotPath, path.join(archive, "graph.html"), path.join(archive, "manifest.json")]) validateArtifact(file, root);
   const archivedManifest = manifestSchema.parse(readJson(path.join(archive, "manifest.json")));
   if (stable(manifest) !== stable(archivedManifest) || digest(fs.readFileSync(requested)) !== manifest.snapshotHash ||
       digest(fs.readFileSync(snapshotPath)) !== manifest.snapshotHash || digest(fs.readFileSync(path.join(archive, "graph.html"))) !== manifest.graphHash) {
     throw new Error("Baseline artifacts have been modified; capture a fresh baseline.");
   }
-  validateWithinWorkspace(manifest.configPath, root);
+  if(context){
+    if(manifest.version!==3||manifest.storageRoot!==context.storage)throw new Error("Baseline storage mismatch; rescan in this project context.");
+    if(manifest.automatic){if(manifest.configPath!==context.profilePath)throw new Error("Baseline profile mismatch.");profile(context);}
+    else validateWithinWorkspace(manifest.configPath,root);
+  }else validateWithinWorkspace(manifest.configPath, root);
   validateWithinWorkspace(path.resolve(root, manifest.scope), root);
-  return { manifest, snapshotPath, directory: archive, baselineId: slash(path.relative(root, snapshotPath)) };
+  return { manifest, snapshotPath, directory: archive, baselineId: artifactName(root,snapshotPath) };
 }
 
 /** Detect edits while checks run, excluding generated/cache/VCS directories. */
@@ -112,7 +124,8 @@ export function sourceState(root: string, ignoredFiles: readonly string[] = []):
   const entries: Array<[string,string]> = [];
   const visit = (directory: string) => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((a,b) => a.name.localeCompare(b.name))) {
-      if ([".git", ".archpulse", "node_modules", "dist", "coverage"].includes(entry.name)) continue;
+      if (generatedDirectories.has(entry.name)) continue;
+      if(projectContext(root)&&entry.name.endsWith(".tsbuildinfo"))continue;
       const file = path.join(directory, entry.name);
       if (ignored.has(file)) continue;
       if (entry.isSymbolicLink()) { entries.push([slash(path.relative(root,file)), fs.readlinkSync(file)]); continue; }
@@ -120,5 +133,7 @@ export function sourceState(root: string, ignoredFiles: readonly string[] = []):
       else if (entry.isFile()) entries.push([slash(path.relative(root,file)), digest(fs.readFileSync(file))]);
     }
   };
-  visit(root); return digest(stable(entries));
+  visit(root);
+  if(projectContext(root))return digest(stable({entries,profile:profile(),typescript:discoverProject(root).projects.map(p=>({file:p.file,options:p.options}))}));
+  return digest(stable(entries));
 }

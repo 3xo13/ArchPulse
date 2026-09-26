@@ -11,6 +11,9 @@ import { assertMutableOutput, digest, internalPath, json, publishFiles, withRepo
 import { configurationFingerprint, policyHash, sourceState, type Manifest } from "../core/provenance.js";
 import { runProcess } from "../core/process.js";
 import { validateWithinWorkspace } from "../core/workspace.js";
+import { projectContext, profile, artifactName, validateArtifact } from "../core/project.js";
+import { automaticScan } from "../core/automatic-scan.js";
+import { minimatch } from "minimatch";
 
 export interface ScanOptions {
   repoRoot?: string;
@@ -36,6 +39,7 @@ export interface ScanSummary {
   configHash: string;
   incompleteResolutionCount: number;
   scannerWarnings: string[];
+  coverageIncomplete?: boolean;
 }
 
 const addonRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -44,60 +48,72 @@ const slash = (value: string): string => value.replace(/\\/g, "/");
 
 export async function runScan(options: ScanOptions = {}): Promise<ScanSummary> {
   let repoRoot = path.resolve(slash(options.repoRoot ?? process.cwd()));
-  const configPath = path.resolve(repoRoot, slash(options.configPath ?? ".dependency-cruiser.cjs"));
-  if (!existsSync(configPath)) throw new Error(`dependency-cruiser config not found: ${configPath}`);
+  const context=projectContext(repoRoot);
+  const settings=context?profile(context):undefined;
+  const automatic=Boolean(context&&!settings?.adoptedConfig&&!options.configPath);
+  const configPath = automatic ? context!.profilePath : path.resolve(repoRoot, slash(options.configPath ?? settings?.adoptedConfig ?? ".dependency-cruiser.cjs"));
+  if (!automatic&&!existsSync(configPath)) throw new Error(`dependency-cruiser config not found: ${configPath}`);
 
   repoRoot = realpathSync(repoRoot);
   return withRepositoryLock(repoRoot, async () => {
     options.signal?.throwIfAborted();
     const architecturePath = path.join(repoRoot, "config", "architecture.json");
-    const architecture = architectureSchema.pick({layers:true,scanScope:true}).partial().parse(existsSync(architecturePath)
+    const architecture = architectureSchema.pick({layers:true,scanScope:true}).partial().parse(context ? settings : existsSync(architecturePath)
       ? JSON.parse(readFileSync(architecturePath, "utf8")) : {});
-    const scope = path.resolve(repoRoot, slash(options.scanScope ?? architecture.scanScope ?? "src"));
+    const scope = path.resolve(repoRoot, slash(options.scanScope ?? architecture.scanScope ?? (context ? "." : "src")));
     validateWithinWorkspace(scope,repoRoot);
-    if(options.workspaceOnly)validateWithinWorkspace(configPath,repoRoot);
+    if((options.workspaceOnly||context)&&!automatic)validateWithinWorkspace(configPath,repoRoot);
     const relativeScope = slash(path.relative(repoRoot, scope)) || ".";
     if (path.isAbsolute(relativeScope) || relativeScope === ".." || relativeScope.startsWith("../")) {
       throw new Error("Scan scope must be within the repository root.");
     }
-    const outDir = path.resolve(repoRoot, slash(options.outDir ?? ".archpulse/latest"));
+    const outDir = path.resolve(context?.storage ?? repoRoot, slash(options.outDir ?? (context ? "latest" : ".archpulse/latest")));
     assertMutableOutput(repoRoot,outDir);
     const outputs = ["snapshot.json", "graph.html", "manifest.json"].map(name => path.join(outDir, name));
     const state = sourceState(repoRoot, outputs);
+    const capturePolicy = context ? policyHash(repoRoot) : undefined;
     const checkCapture = (staged: string[] = []) => {
       options.signal?.throwIfAborted();
-      if (state !== sourceState(repoRoot, [...outputs, ...staged])) {
+      if (state !== sourceState(repoRoot, [...outputs, ...staged]) || (context && capturePolicy !== policyHash(repoRoot))) {
         throw new Error("Source or configuration changed during scan; retry with a stable workspace.");
       }
     };
     const pkg = JSON.parse(readFileSync(path.join(scannerRoot, "package.json"), "utf8")) as { version: string };
-    const raw = await runDepcruise(repoRoot, configPath, scope, options);
+    const captured = automatic ? await automaticScan(repoRoot, {signal:options.signal,timeoutMs:options.timeoutMs},relativeScope) : undefined;
+    const raw = captured?.raw ?? await runDepcruise(repoRoot, configPath, scope, options);
     const configHash = configurationFingerprint(raw, repoRoot, relativeScope, pkg.version);
     const snapshot = normalizeSnapshot(raw, repoRoot, configHash,
       `dependency-cruiser@${pkg.version}`, resolveGitMarker(repoRoot), relativeScope, architecture.layers ?? []);
+    if(captured)for(const module of snapshot.modules){
+      const pkg=[...captured.discovery.packages].sort((a,b)=>b.directory.length-a.directory.length).find(p=>p.directory==="."||module.path.startsWith(p.directory+"/"));
+      module.package=pkg?.name??"<root>";
+      module.layer=architecture.layers?.find(layer=>minimatch(module.path,layer.glob,{dot:true}))?.name;
+    }
 
     // Rendering must succeed before either existing artifact is replaced.
     const graphHtml = await generateGraphHtml(raw, repoRoot, options);
     options.signal?.throwIfAborted();
     const id = randomUUID();
-    const baselineId = `.archpulse/scans/${id}/snapshot.json`;
+    const baselineId = artifactName(repoRoot,internalPath(repoRoot,"scans",id,"snapshot.json"));
     const snapshotJson = json(snapshot);
-    const manifest: Manifest = { version: 2, id, repoRoot, configPath, scope: relativeScope,
+    const manifest: Manifest = { version: context ? 3 : 2, id, repoRoot, configPath, scope: relativeScope,
       fingerprintVersion: 2, configHash, policyHash: policyHash(repoRoot),
-      snapshotHash: digest(snapshotJson), graphHash: digest(graphHtml) };
+      snapshotHash: digest(snapshotJson), graphHash: digest(graphHtml),
+      ...(context ? {automatic,coverageIncomplete:Boolean(captured?.discovery.unsupported.length||snapshot.scannerWarnings.some(w=>/Ambiguous|PnP|Unsupported dynamic|Unanalyzed source/.test(w))),storageRoot:context.storage} : {}) };
     const changes = new Map<string, string | null>();
     for (const [name, content] of [["snapshot.json", snapshotJson], ["graph.html", graphHtml], ["manifest.json", json(manifest)]]) {
       changes.set(internalPath(repoRoot, "scans", id, name!), content!);
       changes.set(path.join(outDir, name!), content!);
     }
     changes.set(internalPath(repoRoot, "latest-baseline.json"), json({ baselineId }));
-    if(options.workspaceOnly)for(const target of changes.keys())validateWithinWorkspace(target,repoRoot);
+    if(captured)changes.set(internalPath(repoRoot,"scans",id,"discovery.json"),json(captured.discovery));
+    if(options.workspaceOnly||context)for(const target of changes.keys())validateArtifact(target,repoRoot);
     checkCapture();
     publishFiles(changes, checkCapture);
     return {
       baselineId,
-      snapshotPath: slash(path.relative(repoRoot, path.join(outDir, "snapshot.json"))),
-      graphPath: slash(path.relative(repoRoot, path.join(outDir, "graph.html"))),
+      snapshotPath: artifactName(repoRoot,path.join(outDir, "snapshot.json")),
+      graphPath: artifactName(repoRoot,path.join(outDir, "graph.html")),
       violationCount: snapshot.violations.length,
       errorCount: snapshot.violations.filter(v => v.severity === "error").length,
       warnCount: snapshot.violations.filter(v => v.severity === "warn").length,
@@ -106,6 +122,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanSummary> {
       configHash,
       incompleteResolutionCount: snapshot.incompleteResolutionCount,
       scannerWarnings: snapshot.scannerWarnings,
+      ...(context?{coverageIncomplete:manifest.coverageIncomplete}:{}),
     };
   }, options.signal);
 }
@@ -133,7 +150,10 @@ async function runDepcruise(repoRoot: string, configPath: string, scope: string,
 }
 
 async function generateGraphHtml(raw: ICruiseResult, repoRoot: string, options: ScanOptions): Promise<string> {
-  const formatted = await format(raw, { outputType: "dot" });
+  const graphInput=structuredClone(raw);
+  delete (graphInput.summary as unknown as Record<string,unknown>).warnings;
+  if(graphInput.summary.optionsUsed)for(const key of ["automaticProfile","automaticVersion","typescriptProjects"])delete (graphInput.summary.optionsUsed as Record<string,unknown>)[key];
+  const formatted = await format(graphInput, { outputType: "dot" });
   if (formatted.exitCode !== 0 || typeof formatted.output !== "string") {
     throw new Error("dependency-cruiser failed to format the dependency graph.");
   }
@@ -152,7 +172,7 @@ async function generateGraphHtml(raw: ICruiseResult, repoRoot: string, options: 
 
 function resolveGitMarker(repoRoot: string): string {
   try {
-    const gitOptions = { cwd: repoRoot, encoding: "utf8" as const, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
+    const gitOptions = { cwd: repoRoot, env:{...process.env,GIT_OPTIONAL_LOCKS:"0"}, encoding: "utf8" as const, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
     const sha = execFileSync("git", ["rev-parse", "--short", "HEAD"], gitOptions).trim();
     const changed = execFileSync("git", ["status", "--porcelain"], gitOptions).trim();
     return changed ? "working-tree" : sha;

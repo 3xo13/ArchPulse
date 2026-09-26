@@ -17,6 +17,8 @@
     "compare": "tsx src/cli/index.ts compare",
     "start": "tsx src/mcp/server.ts",
     "verify": "tsx src/cli/index.ts verify",
+    "inspect": "tsx src/cli/index.ts inspect",
+    "configure": "tsx src/cli/index.ts configure",
     "viewer:dev": "vite --config src/viewer/vite.config.ts",
     "viewer:build": "vite build --config src/viewer/vite.config.ts",
     "test:viewer": "npm run viewer:build && playwright test"
@@ -25,6 +27,8 @@
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@viz-js/viz": "^3.30.0",
     "dependency-cruiser": "^16.0.0",
+    "minimatch": "^10.2.6",
+    "yaml": "^2.9.1",
     "zod": "^4.0.0"
   },
   "devDependencies": {

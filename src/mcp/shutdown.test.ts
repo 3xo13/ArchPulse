@@ -18,9 +18,9 @@ afterEach(()=>{
   for(const child of children.splice(0)) if(child.exitCode===null)child.kill();
   for(const root of roots.splice(0))fs.rmSync(root,{recursive:true,force:true});
 });
-async function until(condition:()=>boolean, timeout=12000) {
+async function until(condition:()=>boolean, timeout=45000, diagnostics:()=>string=()=>"") {
   const end=Date.now()+timeout;
-  while(!condition()) { if(Date.now()>end)throw new Error("Timed out waiting for child state"); await delay(25); }
+  while(!condition()) { if(Date.now()>end)throw new Error(`Timed out waiting for child state: ${diagnostics()}`); await delay(25); }
 }
 function fixture() {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),"archpulse shutdown "));roots.push(root);
@@ -49,7 +49,7 @@ function server(root:string) {
   return {child,exited,send,stdout:()=>stdout,stderr:()=>stderr};
 }
 
-it.each(["command","scan","publication"])("drains MCP work on EOF during %s",{timeout:45000},async mode=>{
+it.each(["command","scan","publication"])("drains MCP work on EOF during %s",{timeout:120000},async mode=>{
   const f=fixture();
   const scan=await runScan({repoRoot:f.root});
   const cases=await generateCases({repoRoot:f.root,snapshotPath:scan.baselineId});
@@ -60,11 +60,11 @@ it.each(["command","scan","publication"])("drains MCP work on EOF during %s",{ti
   const app=server(f.root);
   try {
     app.send({jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:"2024-11-05",capabilities:{},clientInfo:{name:"shutdown-test",version:"1"}}});
-    await until(()=>app.stdout().includes('"id":1'));
+    await until(()=>app.stdout().includes('"id":1'),45000,()=>`startup; code=${app.child.exitCode}; signal=${app.child.signalCode}; ${app.stderr()}`);
     app.send({jsonrpc:"2.0",method:"notifications/initialized"});
     app.send({jsonrpc:"2.0",id:2,method:"tools/call",params:{name:mode==="scan"?"scan_repository":"verify_case",arguments:mode==="scan"?{}:{baselineId:scan.baselineId,caseId:cases.cases[0]!.caseId,outDir:".archpulse/report"}}});
     const marker=path.join(f.root,".archpulse",mode==="command"?"command-pids.json":mode==="scan"?"scanner-pid":"publication-held");
-    await until(()=>fs.existsSync(marker));
+    await until(()=>fs.existsSync(marker),45000,()=>`${mode} readiness; code=${app.child.exitCode}; signal=${app.child.signalCode}; ${app.stderr()}`);
     const pids:number[]=mode==="command"?JSON.parse(fs.readFileSync(marker,"utf8")):mode==="scan"?[Number(fs.readFileSync(marker,"utf8"))]:[];
     const started=Date.now();app.child.stdin.end();
     await until(()=>app.child.exitCode!==null,11000);

@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { canonicalPath, validateWithinWorkspace } from "./workspace.js";
+import { projectContext, validateManagedPath } from "./project.js";
 
 export const digest = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
 export const json = (value: unknown): string => JSON.stringify(value, null, 2) + "\n";
@@ -11,8 +12,9 @@ export function readJson(file: string): unknown {
   catch (error) { throw new Error(`Cannot read JSON '${file}': ${String(error)}`); }
 }
 export function internalPath(root: string, ...parts: string[]): string {
-  const target = path.join(root, ".archpulse", ...parts);
-  validateWithinWorkspace(target, root);
+  const context = projectContext(root);
+  const target = path.join(context?.storage ?? path.join(root, ".archpulse"), ...parts);
+  if (context) validateManagedPath(target, context); else validateWithinWorkspace(target, root);
   return target;
 }
 export function isScanArchive(root: string, target: string): boolean {

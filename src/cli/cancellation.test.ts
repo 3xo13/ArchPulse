@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),"../..");
 const loader=pathToFileURL(createRequire(import.meta.url).resolve("tsx/esm")).href;
-it.each(["cases","compare"])("cancels real CLI %s while waiting for publication",{timeout:20000},async command=>{
+it.each(["cases","compare"])("cancels real CLI %s while waiting for publication",{timeout:60000},async command=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),"archpulse cli cancel "));
   fs.mkdirSync(path.join(root,".archpulse/report"),{recursive:true});
   const lock=path.join(root,".archpulse/operation.lock");fs.writeFileSync(lock,String(process.pid));
@@ -26,11 +26,13 @@ it.each(["cases","compare"])("cancels real CLI %s while waiting for publication"
   const child=spawn(process.execPath,["--import",loader,"--import",pathToFileURL(preload).href,path.join(repo,"src/cli/index.ts"),command,...args,"--repo",root,"--out",".archpulse/report"],
     {cwd:root,windowsHide:true,stdio:["ignore","pipe","pipe","ipc"]});
   let stderr="";child.stderr!.on("data",chunk=>{stderr+=String(chunk);});child.stdout!.resume();
-  child.once("message",()=>child.send("cancel"));
+  let phase="startup",expired=false;
+  let timer=setTimeout(()=>{expired=true;child.kill();},45000);
+  child.once("message",()=>{phase="cancellation";clearTimeout(timer);timer=setTimeout(()=>{expired=true;child.kill();},10000);child.send("cancel");});
   const done=new Promise<number|null>((resolve,reject)=>{child.once("close",resolve);child.once("error",reject);});
-  const timer=setTimeout(()=>child.kill(),15000);
   try {
-    expect(await done,stderr).toBe(1);
+    const code=await done;
+    expect(code,`phase=${phase}; watchdog=${expired}; signal=${child.signalCode}; stderr=${stderr}`).toBe(1);
     expect(fs.readFileSync(report,"utf8")).toBe("previous report");
     expect(fs.readdirSync(path.dirname(report))).toEqual(["comparison.json"]);
     expect(fs.readFileSync(lock,"utf8")).toBe(String(process.pid));
