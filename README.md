@@ -8,7 +8,7 @@ ArchPulse is a Bob IDE add-on built for the **IBM Bob 2.0 Hackathon**. It gives 
 
 ## Current implementation
 
-Scanning, immutable baselines, case generation, architecture comparison, and full verification are implemented through the CLI and MCP. Verification runs every configured test and typecheck before reporting success. The results viewer and recorded demo workflow remain separate workstreams.
+Scanning, immutable baselines, case generation, architecture comparison, and full verification are implemented through the CLI and MCP. Verification runs every configured test and typecheck before reporting success. A React viewer displays the committed example artifacts; the recorded Bob demo workflow remains a separate workstream.
 
 ## Prerequisites
 
@@ -117,6 +117,15 @@ This writes `comparison.json`, not `result.json`, and does not run tests or type
 Case IDs remain stable for unchanged groups within a repository. Do not assume the example fixture's case numbering matches a fresh repository. Immutable scan generations keep their own case packets; the latest-scan pointer does not change an earlier baseline. Regenerating a mutable case directory removes obsolete owned packets while preserving unrelated files.
 
 Commands default to a 120-second timeout; verification has a ten-minute execution deadline. Ctrl+C cancels CLI work. CLI exit codes are 0 for success, 1 for failed/partial outcomes, and 2 for invalid input or infrastructure failures. MCP summaries are limited to 2 KiB and link to complete artifacts.
+
+### View the example results
+
+```bash
+npm run viewer:dev
+npm run viewer:build
+```
+
+The development command prints a local URL. The production bundle is written to `dist/viewer/`. The viewer loads `artifacts/example/` at build time; it does not automatically load new scans. Source links currently point to the `feature/viewer` branch on GitHub. `npm run build` typechecks both the core application and viewer; `viewer:build` bundles the viewer for serving over HTTP.
 
 ### Start the MCP server manually (for debugging)
 
