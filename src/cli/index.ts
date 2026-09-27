@@ -11,6 +11,7 @@ import { createProjectContext, withProject, projectContext } from "../core/proje
 import { discoverProject } from "../core/discovery.js";
 import { configureProject, proposeChecks, approvedChecks } from "../core/policy.js";
 import { ensureBaselineCases } from "../core/cases.js";
+import { runSetup } from "./setup.js";
 
 const command=process.argv[2] ?? "help";
 const args=process.argv.slice(3);
@@ -25,6 +26,7 @@ cases --snapshot <path> [--repo <path>] [--out <dir>]
 compare --before <snapshot> --after <snapshot> --case <id> [--repo <path>] [--out <dir>]
 verify --before <baseline> --case <id> [--repo <path>] [--out <dir>]
 inspect --repo <path> [--storage-base <dir>]
+setup [--repo <path>] [--storage-base <dir>] (review and approve interactively)
 configure --repo <path> [--approve <proposal-id>] [--storage-base <dir>]
 Use --storage external for setup-free scanning; unconfigured scan targets select it automatically.
 compare checks architecture only; verify runs tests, typechecks, and a fresh scan.`);
@@ -36,10 +38,12 @@ compare checks architecture only; verify runs tests, typechecks, and a fresh sca
     if(command==="inspect"){
       let readiness="Checks not approved";try{approvedChecks(root);readiness="Approved; capture a fresh baseline before repair";}catch(error){readiness=String(error);}
       console.log(json({discovery:discoverProject(root),checks:proposeChecks(root),readiness,storage:projectContext(root)?.storage}));
+    }else if(command==="setup"){
+      await runSetup(root,controller.signal);
     }else if(command==="configure"){
       const configured=await configureProject(root,flags.approve,controller.signal);
       console.log(json(configured));
-      console.log(configured.approved?"Checks approved. Capture a fresh baseline before repair.":`Review this proposal, then run configure --repo "${root}" --approve ${configured.proposal.id}.`);
+      console.log(configured.approved?"Checks approved. Capture a fresh baseline before repair.":`With the ArchPulse launcher registered, run archpulse setup --repo "${root}" to review and approve interactively.\nFor scripted approval, append configure --repo "${root}" --approve ${configured.proposal.id} to the same launcher used for this command.`);
     }else if (command==="scan") {
       const summary=await runScan({repoRoot:root,outDir:flags.out,configPath:flags.config,scanScope:flags.scope,signal:controller.signal});
       console.log(`Scan ${summary.incompleteResolutionCount||summary.coverageIncomplete ? "incomplete" : "complete"}: ${summary.violationCount} violation(s).`);
@@ -77,7 +81,7 @@ try {
   const root=path.resolve(flags.repo??process.cwd());
   const baseline=flags.before??flags.snapshot;
   const baselineRelative=baseline?path.relative(root,path.resolve(root,baseline)):"";
-  const external=["inspect","configure"].includes(command)||flags.storage==="external"||Boolean(flags["storage-base"])||
+  const external=["inspect","configure","setup"].includes(command)||flags.storage==="external"||Boolean(flags["storage-base"])||
     (command==="scan"&&!fs.existsSync(path.join(root,".dependency-cruiser.cjs")))||
     Boolean(baseline&&path.isAbsolute(baseline)&&(path.isAbsolute(baselineRelative)||baselineRelative===".."||baselineRelative.startsWith(`..${path.sep}`)));
   if(external)await withProject(createProjectContext(root,flags["storage-base"]),dispatch);else await dispatch();

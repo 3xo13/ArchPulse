@@ -18,6 +18,39 @@ Git ignores and standard generated directories are excluded. Files excluded deli
 
 ## Approve real checks once per project
 
+For a short command available from any project folder, run this once inside the
+permanent ArchPulse installation folder after installing its dependencies:
+
+```powershell
+npm link --ignore-scripts
+```
+
+Restart your terminal if needed. In the project you want to inspect, run:
+
+```powershell
+archpulse setup
+```
+
+On Windows, use `archpulse.cmd setup` if PowerShell blocks npm's `.ps1` shim.
+Setup discovers checks, shows commands, working directories and package script
+definitions, then asks `Approve these commands for future verification? [y/N]`.
+It never runs the checks. You do not need to copy a proposal ID. Approval is saved
+outside the project and is revalidated against the displayed proposal. Declining
+or closing input saves no new approval. Missing tests or typechecks are reported
+as unavailable verification, not a successful setup. Scanning and graphs still work.
+After approval, ask Bob for a fresh baseline before repairing the selected case.
+
+The link requires this installation folder and its dependencies to remain available.
+Without global launcher registration, run this from the ArchPulse installation folder:
+
+```powershell
+node scripts/archpulse.js setup --repo "<absolute-project-path>"
+```
+
+Re-run the Bob
+installer and reload Bob to update an existing global skill with the new guidance.
+Existing explicit proposal commands below remain supported.
+
 From the ArchPulse checkout:
 
 ```powershell
@@ -62,6 +95,27 @@ Edit the external `profile.json`, then generate and approve a new proposal. Exam
 Explicitly setting `adoptedConfig` to a repository-relative dependency-cruiser configuration opts into loading that configuration, which may execute JavaScript. An adopted configuration controls scanner rules/resolution; the profile supplies grouping/check policy. Discovery lists candidates but never adopts them automatically. Do not copy the demo architecture rules into an unrelated application.
 
 Artifact paths and baseline IDs in external mode are absolute. Import the before snapshot, recorded case, `result.json`, and the `afterSnapshotPath` from `execution.json` into the viewer. Interrupted reports may have no comparison snapshot. Legacy repository-local baselines and fixtures remain usable through their original workflow; recorded legacy cases can be read in global mode, but external verification requires a fresh approved external baseline. Public snapshot/case/result JSON fields and git-marker semantics are unchanged.
+
+## Guided graph and repair workflow in Bob
+
+After reloading Bob, ask: "Use ArchPulse for a guided scan and repair. Show the
+dependency graph in the IDE browser if available, otherwise give me its browser
+link. Retrieve the first case, propose the exact repair, and wait for my approval.
+After approval, repair that case and verify it with real checks."
+
+Successful MCP scans provide a clickable `http://127.0.0.1:<port>/graph/<token>`
+preview and the saved HTML path. The preview needs no terminal server command,
+serves only generated graphs, and stops when the MCP server disconnects. It runs
+on the same machine as ArchPulse; it is not a public sharing URL. Preview memory
+is capped at 32 MiB, so old links may expire. Reopen the saved `graph.html` offline
+if the server has restarted, a link has expired, or preview startup is unavailable.
+An embedded IDE browser depends on the capabilities enabled in your Bob version;
+ArchPulse does not itself install an IDE webview or guarantee inline chat rendering.
+
+Bob's installed skill directs it to show the link first, present a concrete case
+repair plan in the same turn, wait for approval, and then report actual verification
+outcomes and the after graph. Verification links an after graph only for completed
+comparisons. Keep the exact baseline path, not just the UUID, for verification.
 
 The existing project installer still works. CLI `scan` uses legacy mode for a project with `.dependency-cruiser.cjs`; pass `--storage external` to opt into automatic external mode. Unconfigured CLI scan targets select external mode automatically. Global MCP always uses external mode. No command changes tracked application files merely to prepare a scan.
 

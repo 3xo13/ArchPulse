@@ -13,10 +13,17 @@ import { internalPath } from "../core/storage.js";
 import { fileURLToPath } from "node:url";
 import { createProjectContext, withProject, projectContext, validateArtifact, artifactName } from "../core/project.js";
 import { approvedChecks } from "../core/policy.js";
+import { createGraphPreview } from "./graph-preview.js";
 export { validateWithinWorkspace } from "../core/workspace.js";
 
 const server = new McpServer({ name: "archpulse", version: "0.1.0" });
-const lifecycle = createLifecycle(() => server.close());
+const graphPreview = createGraphPreview();
+const lifecycle = createLifecycle(async () => { try { await server.close(); } finally { await graphPreview.close(); } });
+async function previewGraph(root: string, snapshot: string): Promise<string> {
+  const graph = path.join(path.dirname(path.resolve(root, snapshot)), "graph.html");
+  validateArtifact(graph, root);
+  return graphPreview.add(fs.readFileSync(graph, "utf8"));
+}
 async function workspace(candidate?: string): Promise<string> {
   if(process.env.ARCHPULSE_MODE==="global"){
     let roots:string[]=[];
@@ -60,30 +67,38 @@ function reply(text: string, isError = false) {
 }
 const relative=artifactName;
 server.registerTool("scan_repository", {
-  description:"Scan the repository and return an immutable baseline ID, artifact paths, and a bounded case index. Unresolved dependencies make coverage incomplete.",
+  description:"Scan and return a browser graph link, exact immutable baseline path, cases, and next step. Show the graph link to the user, then retrieve a case and propose a repair for approval. Never shorten the baseline path to a UUID. Incomplete coverage blocks verification.",
   inputSchema:z.object({ workspacePath:z.string().optional(),outDir:z.string().optional() }),
 },async ({workspacePath,outDir},extra)=>operation(workspacePath,async(root)=>{
   try {
     const out=output(root,outDir,["snapshot.json","graph.html","manifest.json"]);
     const scan=await runScan({repoRoot:root,outDir:out,signal:extra?.signal,workspaceOnly:true});
-    const lines=[`Baseline: ${scan.baselineId}`,`Snapshot: ${scan.snapshotPath}`,`Graph: ${scan.graphPath}`,
+    let preview: string | undefined;
+    try { preview = await previewGraph(root, scan.baselineId); }
+    catch(error) { console.error("[archpulse] Graph preview unavailable:", String(error)); }
+    const lines=[...(preview ? [`[Open dependency graph](${preview})`, `Browser preview: ${preview}`] : []),
+      `Baseline: ${scan.baselineId}`,`Snapshot: ${scan.snapshotPath}`,`Graph: ${scan.graphPath}`,
       `Scan ${scan.incompleteResolutionCount||scan.coverageIncomplete ? "incomplete" : "complete"}: ${scan.violationCount} violation(s).`,
       `Unresolved dependency edges: ${scan.incompleteResolutionCount}`];
+    let next = "Next: inspect the graph and reported coverage; no repair case is available.";
     if (projectContext(root)||fs.existsSync(path.join(root,"config/architecture.json"))) {
       try {
         const cases=await ensureBaselineCases(root,scan.baselineId,extra?.signal);
+        if (cases.cases.length) next = `Next: call get_case for ${cases.cases[0]!.caseId} with the exact Baseline path above, inspect its files, then present a concrete repair plan for approval. Do not edit yet.`;
         lines.push(`Case index: ${relative(root,path.join(cases.caseDirectory,"index.json"))}`,`${cases.cases.length} case(s)`);
         for (const item of cases.cases.slice(0,10)) lines.push(`${item.caseId}: ${item.title ?? ""}`);
       } catch(error) {lines.push(`Case generation unavailable: ${String(error)}`);}
     } else lines.push("Case generation requires config/architecture.json.");
     if(projectContext(root)){
       lines.push("Generic rules do not establish project-specific architecture compliance.");
-      try{approvedChecks(root);lines.push("Checks approved.");}catch{lines.push(`Verification setup: run configure --repo "${root}", review and approve its proposal, then rescan.`);}
+      try{const checks=approvedChecks(root);lines.push(checks.tests.length&&checks.typechecks.length?"Checks approved (not run).":"Full verification unavailable: approved policy needs both tests and typechecks.");}catch{lines.push("Scanning needs no command approval. For full verification, run archpulse setup in the project terminal after registering the launcher; see the installed skill for the fallback command. Then capture a fresh baseline.");}
     }
     for (const warning of scan.scannerWarnings.slice(0,10)) lines.push(`Warning: ${warning}`);
     if (!scan.violationCount) lines.push(scan.incompleteResolutionCount||scan.coverageIncomplete ? "No violations detected among resolved dependencies; coverage is incomplete." : "No rule violations detected.");
     for (const v of scan.violations.slice(0,10)) lines.push(`[${v.severity}] ${v.rule}: ${v.from} -> ${v.to}`);
     if (scan.violations.length>10) lines.push(`${scan.violations.length-10} more violation(s) in the snapshot.`);
+    // Keep the graph and next action ahead of verbose diagnostics under the 2 KiB cap.
+    lines.splice(preview ? 2 : 0, 0, next);
     return reply(lines.join("\n"));
   } catch(error) { return reply(`scan_repository failed: ${String(error)}`,true); }
 }));
@@ -114,8 +129,15 @@ server.registerTool("verify_case", {
     const out=outDir ? output(root,outDir,["result.json","result.md","execution.json"]) : undefined;
     // Validate the default storage root before verification starts.
     internalPath(root,"verifications");
-    const {result,resultPath}=await verifyCase({repoRoot:root,caseId,baselineId,outDir:out,signal:extra?.signal,workspaceOnly:true});
-    return reply(`${resultPath ? `Result: ${relative(root,resultPath)}` : "Report not saved."}\n${result.status}: ${result.reason}\nTests: ${result.testExitCode}; typechecks: ${result.typecheckExitCode}`,result.status==="invalid");
+    const {result,resultPath,afterSnapshotPath}=await verifyCase({repoRoot:root,caseId,baselineId,outDir:out,signal:extra?.signal,workspaceOnly:true});
+    const lines=[`${resultPath ? `Result: ${relative(root,resultPath)}` : "Report not saved."}`,`${result.status}: ${result.reason}`,`Tests: ${result.testExitCode}; typechecks: ${result.typecheckExitCode}`];
+    if (afterSnapshotPath && result.afterId) {
+      try { lines.push(`[Open after graph](${await previewGraph(root,afterSnapshotPath)})`); }
+      catch(error) { console.error("[archpulse] After graph preview unavailable:", String(error)); }
+      lines.push(`After snapshot: ${relative(root,afterSnapshotPath)}`,`After graph: ${relative(root,path.join(path.dirname(afterSnapshotPath),"graph.html"))}`);
+    }
+    lines.push(result.status==="verified" ? "Next: review the result and remaining violations. Ask before repairing another case." : "Next: explain the blockers or failed checks and propose the next action; do not claim success.");
+    return reply(lines.join("\n"),result.status==="invalid");
   } catch(error) {return reply(`verify_case failed: ${String(error)}`,true);}
 }));
 lifecycle.listen();

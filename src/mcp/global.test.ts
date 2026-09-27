@@ -27,18 +27,24 @@ it("runs global MCP discovery, approved CLI setup, repair verification and viewe
   const cli=(...args:string[])=>runProcess(process.execPath,["--import",loader,path.join(repo,"src/cli/index.ts"),...args,"--repo",root,"--storage-base",storage],{cwd:repo,timeoutMs:45000});
   try{
     await client.connect(transport);
-    const first=await client.callTool({name:"scan_repository",arguments:{}});expect(first.isError,text(first)).not.toBe(true);expect(text(first)).toContain("configure");
+    const first=await client.callTool({name:"scan_repository",arguments:{}});expect(first.isError,text(first)).not.toBe(true);expect(text(first)).toContain("archpulse setup");expect(text(first)).toContain("Scanning needs no command approval");
     expect(fs.readdirSync(root).sort()).toEqual(originalFiles);
     const proposal=await cli("configure");expect(proposal.exitCode,proposal.output).toBe(0);
     const id=proposal.stdout.match(/"id": "([^"]+)"/)![1]!;
     expect((await cli("configure","--approve",id)).exitCode).toBe(0);
     const scanned=await client.callTool({name:"scan_repository",arguments:{workspacePath:root}});expect(scanned.isError,text(scanned)).not.toBe(true);
+    expect(text(scanned)).toContain("Next: call get_case for case-001");
+    expect(Buffer.byteLength(text(scanned))).toBeLessThanOrEqual(2048);
+    const graphUrl=text(scanned).match(/^Browser preview: (.+)$/m)![1]!;
+    expect(await (await fetch(graphUrl)).text()).toContain("<svg");
     const baseline=text(scanned).match(/^Baseline: (.+)$/m)![1]!;
     const selected=await client.callTool({name:"get_case",arguments:{caseId:"case-001",baselineId:baseline}});expect(selected.isError,text(selected)).not.toBe(true);
     const packetPath=text(selected).match(/^Packet: (.+)$/m)![1]!;
     fs.writeFileSync(path.join(root,"b.js"),"export const b=1;");
     const verified=await client.callTool({name:"verify_case",arguments:{caseId:"case-001",baselineId:baseline}});
     expect(text(verified)).toContain("verified:");
+    const afterGraph=text(verified).match(/\[Open after graph\]\(([^)]+)\)/)![1]!;
+    expect(await (await fetch(afterGraph)).text()).toContain("<svg");
     const resultPath=text(verified).match(/^Result: (.+)$/m)![1]!;
     const execution=JSON.parse(fs.readFileSync(path.join(path.dirname(resultPath),"execution.json"),"utf8"));
     const read=(file:string)=>JSON.parse(fs.readFileSync(file,"utf8"));
@@ -51,5 +57,7 @@ it("runs global MCP discovery, approved CLI setup, repair verification and viewe
     const missing=await client.callTool({name:"scan_repository",arguments:{}});expect(missing.isError).toBe(true);
     const explicit=await client.callTool({name:"get_case",arguments:{workspacePath:root,caseId:"case-001",baselineId:baseline}});expect(explicit.isError,text(explicit)).not.toBe(true);
     expect(fs.readdirSync(root).sort()).toEqual(originalFiles);
+    await client.close();
+    await expect(fetch(graphUrl)).rejects.toThrow();
   }finally{await client.close();fs.rmSync(temp,{recursive:true,force:true});}
 });

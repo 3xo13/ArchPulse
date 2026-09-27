@@ -53,6 +53,12 @@ scripts/global-skill.md. Do not remove demo workspaces or edit the package manif
 independently of its lockfile. This is a source distribution requiring dependency
 installation, not a standalone executable or an offline bundle.
 
+The current page documents the short launcher, interactive setup, and local graph
+preview. Before deploying these instructions, replace any older download archive
+with the matching implementation: include `scripts/archpulse.js`, the package's
+`bin` entry, `src/cli/setup.ts`, `src/mcp/graph-preview.ts`, and the updated global
+skill and MCP server. Updating this website does not rebuild the supplied archive.
+
 ZIP and RAR archives are ignored by Git by default. For a Git-based Vercel deployment, the
 archive must be deliberately included in the deployment source (for example, explicitly
 stage this single file), or deploy the local folder through Vercel CLI. An ignored
@@ -74,6 +80,7 @@ need a RAR-capable extractor such as 7-Zip or WinRAR.
 
 ```powershell
 npm ci --include=dev --ignore-scripts
+npm link --ignore-scripts
 node scripts/install-bob-addon.js --global
 ```
 
@@ -84,9 +91,22 @@ server. Ask Bob to scan without editing files; provide an absolute workspacePath
 if Bob cannot discover the root. Dependencies must already be installed in the
 target project for complete resolution. Missing coverage is reported explicitly.
 
-The page includes a copyable scan prompt and a separate explanation of `configure`
-and approval before real tests/typechecks. Capture a fresh baseline after approving
-checks and before repairing. Package commands may themselves modify project files.
+The link command registers `archpulse` for use from any project folder. Open a
+terminal in the target application and run `archpulse setup` to review commands
+and approve with `y`; no proposal ID is needed. On Windows, `archpulse.cmd setup`
+avoids PowerShell script-shim restrictions. Without registration, run
+`node scripts/archpulse.js setup --repo "<ABSOLUTE_PROJECT_PATH>"` from the installed
+ArchPulse folder, replacing the placeholder with the application's actual path.
+
+Setup saves approval externally and does not execute checks. Both tests and
+typechecks are required for full verification. Capture a fresh baseline after
+approving checks and before repairing. Package commands may modify project files.
+Scanning and graph viewing do not require command approval.
+
+The copyable Bob prompt requests graph → repair plan → user approval → repair →
+verification. Graph previews use session-local HTTP links on the machine running
+ArchPulse; keep the saved HTML path for offline access after shutdown. Embedded
+IDE display depends on Bob's available browser tools and is not guaranteed.
 
 ## Deploy to Vercel
 

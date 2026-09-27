@@ -13,6 +13,7 @@ vi.mock("@modelcontextprotocol/sdk/server/mcp.js", () => ({ McpServer: class {
 } }));
 vi.mock("@modelcontextprotocol/sdk/server/stdio.js", () => ({ StdioServerTransport: class {} }));
 vi.mock("../cli/scan.js", () => ({ runScan: vi.fn() }));
+vi.mock("./graph-preview.js", () => ({ createGraphPreview: () => ({ add: async () => "http://127.0.0.1:12345/graph/test", close: async () => {} }) }));
 vi.mock("node:fs", async original => {
   const actual = await original<typeof import("node:fs")>();
   return { ...actual, realpathSync: vi.fn(actual.realpathSync) };
@@ -25,6 +26,7 @@ beforeEach(() => {
   vi.mocked(fs.realpathSync).mockImplementation(actualFs.realpathSync);
   temp = fs.mkdtempSync(path.join(os.tmpdir(), "archpulse-workspace-"));
   root = path.join(temp, "repo"); fs.mkdirSync(root);
+  fs.mkdirSync(path.join(root,"baseline")); fs.writeFileSync(path.join(root,"baseline/graph.html"),"<svg></svg>");
   vi.stubEnv("ARCHPULSE_ROOT", root);
   vi.mocked(runScan).mockReset().mockResolvedValue({ baselineId: "baseline/snapshot.json", snapshotPath: "out/snapshot.json", graphPath: "out/graph.html",
     violationCount: 0, errorCount: 0, warnCount: 0, violations: [], gitMarker: "abc", configHash: "hash",

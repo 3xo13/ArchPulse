@@ -76,7 +76,10 @@ test("mobile layout and Bob installation instructions stay readable", async ({ p
   await expect(page.getByRole("heading", { name: "Install in Bob IDE" })).toBeVisible();
   await expect(page.getByText(/npm ci --include=dev --ignore-scripts/)).toBeVisible();
   await page.getByText("Ready to verify a repair? Approve your project’s checks first.").click();
-  await expect(page.getByText(/--approve "YOUR_PROPOSAL_ID"/)).toBeVisible();
+  await expect(page.getByText("archpulse setup", { exact: true })).toBeVisible();
+  await expect(page.getByText("archpulse.cmd setup", { exact: true })).toBeVisible();
+  await expect(page.getByText("Approve these commands for future verification? [y/N]", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.goto("/#/demo");
   await expect(page.getByRole("heading", { name: /Follow the evidence/ })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
