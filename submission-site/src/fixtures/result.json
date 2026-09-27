@@ -1,0 +1,34 @@
+{
+  "caseId": "case-001",
+  "baselineId": "baseline",
+  "afterId": "post-repair",
+  "resolvedViolations": [
+    {
+      "id": "ui-no-db::demo/packages/ui/src/orderService.ts::demo/packages/db/src/index.ts",
+      "rule": "ui-no-db",
+      "from": "demo/packages/ui/src/orderService.ts",
+      "to": "demo/packages/db/src/index.ts",
+      "severity": "error",
+      "cyclePath": null,
+      "evidence": "ui imports { saveOrder, findOrdersByUser } from @demo/db — forbidden: UI layer must not access db directly"
+    }
+  ],
+  "persistentViolations": [
+    {
+      "id": "shared-no-domain::demo/packages/shared/src/index.ts::demo/packages/domain/src/index.ts",
+      "rule": "shared-no-domain",
+      "from": "demo/packages/shared/src/index.ts",
+      "to": "demo/packages/domain/src/index.ts",
+      "severity": "error",
+      "cyclePath": null,
+      "evidence": "shared imports { formatOrder } from @demo/domain — forbidden: lower-level package must not depend on higher-level domain"
+    }
+  ],
+  "newViolations": [],
+  "testCommand": "npx vitest run demo/packages/domain/src\nnpx vitest run demo/packages/db/src\nnpx vitest run demo/packages/ui/src\nnpx vitest run demo/packages/shared/src",
+  "testExitCode": 0,
+  "testOutput": "$ npx vitest run demo/packages/domain/src\nExit: 0\n\n$ npx vitest run demo/packages/db/src\nExit: 0\n\n$ npx vitest run demo/packages/ui/src\nExit: 0\n\n$ npx vitest run demo/packages/shared/src\nExit: 0\n",
+  "typecheckExitCode": 0,
+  "status": "verified",
+  "reason": "All 1 selected violations resolved; no new violations. All configured tests and typechecks passed. 1 unrelated baseline violation(s) remain."
+}

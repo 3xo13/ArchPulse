@@ -1,0 +1,9 @@
+node_modules/
+dist/
+test-results/
+playwright-report/
+.vercel/
+*.log
+.env*
+public/downloads/*.zip
+public/downloads/*.rar
